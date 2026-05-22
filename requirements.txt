@@ -1,0 +1,13 @@
+torch>=2.0.0
+torchvision>=0.15.0
+transformers>=4.40.0
+accelerate>=0.28.0
+pyyaml>=6.0
+pillow>=9.0.0
+pdf2image>=1.16.0
+pymupdf>=1.22.0
+tqdm>=4.65.0
+einops>=0.6.0
+peft>=0.10.0
+datasets>=2.18.0
+huggingface_hub>=0.22.0

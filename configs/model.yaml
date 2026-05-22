@@ -1,0 +1,14 @@
+model:
+  name: "vidore/colpali-v1.3-hf"
+  embedding_dim: 128            # ColPali late-interaction vector dimension (D)
+  projection_dim: 256           # Dimension for fusion and reasoning layers
+  device: "cuda"                # "cuda" or "cpu"
+  dtype: "bfloat16"             # "bfloat16", "float16", or "float32"
+  
+fusion:
+  num_heads: 4                  # Number of attention heads for simple fusion
+  dropout: 0.1
+
+decoder:
+  num_classes: 2                # For span prediction (start and end logits)
+  max_answer_len: 20            # Max length of predicted answer span

@@ -1,0 +1,66 @@
+# =========================
+# YOUR PROJECT SPECIFIC FILES
+# =========================
+
+# Dataset folder
+debug_data/
+
+# Logs
+logs/
+
+# Virtual Environment
+.doc/
+
+# Private Research Document
+Multidocvqa research planning document.pdf
+
+# =========================
+# PYTHON
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# =========================
+# JUPYTER
+# =========================
+.ipynb_checkpoints/
+
+# =========================
+# MODEL FILES
+# =========================
+*.pth
+*.pt
+*.ckpt
+*.bin
+
+# =========================
+# CACHE
+# =========================
+.cache/
+.pytest_cache/
+.mypy_cache/
+
+# =========================
+# ENVIRONMENT VARIABLES
+# =========================
+.env
+.env.*
+
+# =========================
+# IDE SETTINGS
+# =========================
+.vscode/
+.idea/
+
+# =========================
+# OS FILES
+# =========================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# =========================
+# LOG FILES
+# =========================
+*.log
