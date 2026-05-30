@@ -1,4 +1,9 @@
 import os
+import sys
+
+# Inject project root directory into sys.path to guarantee clean package imports
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 import torch
 import torch.nn.functional as F
 import yaml
@@ -6,6 +11,8 @@ from PIL import Image
 
 from trainers.trainer import ColPaliTrainer
 from models.memory.memory_bank import MemoryBank
+from models.memory.memory_router import MemoryRouter
+from models.memory.gumbel_router import GumbelRouter
 from datasets.docvqa import DocVQADataset, collate_fn
 from utils.logger import setup_logger
 
@@ -51,83 +58,153 @@ def main():
     dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
     logger.info(f"Using device: {device} | dtype: {dtype}")
     
-    # 2. Load ColPali Backbone once
+    # 2. Load ColPali Backbone once (Quantized in 4-bit if enabled in config)
     model_name = model_config["model"]["name"]
-    logger.info(f"Loading pre-trained ColPali backbone from {model_name}...")
+    quantize = model_config["model"].get("quantize_4bit", False)
     from transformers import ColPaliForRetrieval
-    shared_model = ColPaliForRetrieval.from_pretrained(
-        model_name,
-        torch_dtype=dtype,
-        device_map="cuda" if torch.cuda.is_available() else "cpu"
-    )
     
-    # 3. Instantiate Encoders and Memory Bank
+    if quantize and torch.cuda.is_available():
+        logger.info(f"Loading pre-trained ColPali backbone {model_name} in 4-bit quantization...")
+        from transformers import BitsAndBytesConfig
+        quantization_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+            llm_int8_skip_modules=["embedding_proj_layer"]
+        )
+        shared_model = ColPaliForRetrieval.from_pretrained(
+            model_name,
+            quantization_config=quantization_config,
+            device_map="auto"
+        )
+    else:
+        logger.info(f"Loading pre-trained ColPali backbone {model_name} in standard {dtype}...")
+        shared_model = ColPaliForRetrieval.from_pretrained(
+            model_name,
+            torch_dtype=dtype,
+            device_map="cuda" if torch.cuda.is_available() else "cpu"
+        )
+        
+    # Freeze all parameters of the shared ColPali backbone.
+    # This prevents gradient tracking, saves memory, and fixes bitsandbytes precision casting bugs!
+    for param in shared_model.parameters():
+        param.requires_grad = False
+    
+    # 3. Instantiate Encoders, Memory Bank, Policy Router and Gumbel Router
     from models.encoders.vision_encoder import ColPaliVisionEncoder
     from models.encoders.question_encoder import ColPaliQuestionEncoder
     
     vision_encoder = ColPaliVisionEncoder(model_name=model_name, device=device, dtype=dtype, shared_model=shared_model)
     question_encoder = ColPaliQuestionEncoder(model_name=model_name, device=device, dtype=dtype, shared_model=shared_model)
     memory_bank = MemoryBank(model_config)
+    router = MemoryRouter(model_config).to(device).to(dtype)
+    gumbel = GumbelRouter(temperature=0.5).to(device)
     
-    # 4. Load the 20-sample DocVQA subset
-    logger.info("Loading 20-sample real DocVQA subset...")
+    # 4. Load the 20-sample Multi-Page DocVQA subset
+    logger.info("Loading 20-sample real Multi-Page DocVQA subset...")
     dataset = DocVQADataset(train_config, is_train=True, debug=True)
     logger.info(f"Dataset successfully loaded. Total samples: {len(dataset)}")
     
-    # 5. Run Verification on the first sample
-    sample_idx = 2  # Sample 2: "Which corporation's letterhead is this?" -> "Brown & Williamson Tobacco Corporation"
+    # 5. Run Verification on the multi-page sample
+    sample_idx = 2  # Sample 2: "What is the name of the company?" (Ground Truth: "ITC Limited", located on Page 11 of 12)
     sample = dataset[sample_idx]
     
-    logger.info(f"\n--- Running Verification on Sample {sample_idx} ---")
+    logger.info(f"\n--- Running Verification on Multi-Page Sample {sample_idx} ---")
     logger.info(f"Question: '{sample['question']}'")
     logger.info(f"Ground Truth Answer: '{sample['answer']}'")
+    logger.info(f"Number of Pages in Document: {len(sample['images'])}")
     
     # Step A: Vision Embedding Generation (Phase 1)
-    logger.info("\n[Phase 1] Generating page visual embeddings...")
+    logger.info("\n[Phase 1] Generating multi-page visual embeddings sequentially to save VRAM...")
+    page_embs = []
     with torch.no_grad():
-        page_emb = vision_encoder([sample["image"]])
-    logger.info(f"-> Generated Page Embedding Shape: {page_emb.shape}") # [1, 1030, D]
+        for p_idx, img in enumerate(sample["images"]):
+            # Encode each page image individually to stay safely under 4GB VRAM limit
+            emb = vision_encoder([img])  # Shape [1, 1030, D]
+            page_embs.append(emb.cpu())  # Temporarily store on CPU to save active VRAM
+            
+    # Combine page embeddings along batch dimension (num_pages)
+    page_emb = torch.cat(page_embs, dim=0).to(device)
+    logger.info(f"-> Generated Multi-Page Embedding Shape: {page_emb.shape}") # [N_pages, 1030, D]
     
     # Step B: Chunk Partitioning & Memory Bank Formation (Phase 2)
-    logger.info("\n[Phase 2] Partitioning page into quadrant visual memory slots...")
+    logger.info("\n[Phase 2] Partitioning all pages into quadrant visual memory slots...")
     memory_outputs = memory_bank(page_emb)
-    chunk_embeddings = memory_outputs["embeddings"] # [1, 4, 256, D]
+    chunk_embeddings = memory_outputs["embeddings"] # [1, total_slots, 256, D]
     chunk_metadata = memory_outputs["metadata"]
     
     logger.info(f"-> Created Memory Bank of Chunks. Stacked Shape: {chunk_embeddings.shape}")
-    for idx, meta in enumerate(chunk_metadata):
-        logger.info(f"   * Slot {idx}: Name: '{meta['name']}' | Normalized BBox: {meta['bbox']}")
+    logger.info(f"-> Total Visual Memory Slots: {len(chunk_metadata)} ({len(sample['images'])} pages x 4 quadrants)")
         
-    # Step C: Question Embedding & Similarity Verification (Phase 3)
-    logger.info("\n[Phase 3] Encoding question text and verifying retrieval similarity (MaxSim)...")
+    # Step C: Question Embedding (Phase 3)
+    logger.info("\n[Phase 3] Encoding question text...")
     with torch.no_grad():
         query_emb = question_encoder([sample["question"]])
     logger.info(f"-> Generated Question Embedding Shape: {query_emb.shape}") # [1, num_query_tokens, D]
     
-    # Compute similarity between query and each of the 4 visual chunks
-    logger.info("\nCalculating Late-Interaction similarity scores per visual memory slot:")
-    best_slot = -1
-    best_score = -100.0
+    # Step D: Policy Router Logits (Phase 4 / 5)
+    logger.info("\n[Phase 4/5] Running Question-Guided Policy Router MLP...")
+    # Calculate 2D activation logits per memory slot: [1, total_slots, 2]
+    with torch.no_grad():
+        logits = router(query_emb.to(dtype), chunk_embeddings.to(dtype))
+    logger.info(f"-> Generated Policy Logits Shape: {logits.shape}")
     
-    for idx in range(chunk_embeddings.size(1)):
-        # Extract query and chunk vectors (strip batch dim)
-        q_emb = query_emb[0].to(torch.float32)
-        c_emb = chunk_embeddings[0, idx].to(torch.float32)
-        
-        sim_score = compute_late_interaction_maxsim(q_emb, c_emb)
-        logger.info(f"   * Similarity to Slot {idx} ({chunk_metadata[idx]['name']}): {sim_score:.4f}")
-        
-        if sim_score > best_score:
-            best_score = sim_score
-            best_slot = idx
+    # Step E: Gumbel-Softmax Gating (Phase 4 / 6)
+    logger.info("\n[Phase 4/6] Running Differentiable Gumbel-Softmax Binary Router Gating...")
+    with torch.no_grad():
+        # z contains strict 0.0 or 1.0 decisions: [1, total_slots]
+        z = gumbel(logits, hard=True)
+    logger.info(f"-> Generated Gumbel Gates Shape: {z.shape}")
+    
+    # Calculate the Active Memory Ratio (percentage of chunks activated)
+    active_slots_count = torch.sum(z[0]).item()
+    active_memory_ratio = (active_slots_count / len(chunk_metadata)) * 100
+    
+    # Get active and frozen slots lists
+    active_slots = []
+    for idx, gate in enumerate(z[0]):
+        if gate.item() == 1.0:
+            active_slots.append(idx)
             
+    # Calculate continuous probabilities for logs (via standard softmax over logits)
+    probs = F.softmax(logits, dim=-1) # [1, total_slots, 2]
+    
+    # Combine everything for logging
+    slot_details = []
+    for idx in range(chunk_embeddings.size(1)):
+        p_act = probs[0, idx, 1].item()
+        logit_act = logits[0, idx, 1].item()
+        gate_val = z[0, idx].item()
+        slot_details.append((idx, logit_act, p_act, gate_val, chunk_metadata[idx]))
+        
+    # Sort slots by raw activation logit value descending (what the router likes most)
+    slot_details.sort(key=lambda x: x[1], reverse=True)
+    
+    logger.info("\n--- Top 5 Slots Preferred by the Policy Router ---")
+    for rank, (idx, logit, prob, gate, meta) in enumerate(slot_details[:5]):
+        logger.info(
+            f"Rank {rank+1}: Slot {idx} | Name: '{meta['name']}' | Page index: {meta['page_id']} | "
+            f"Act Logit: {logit:.4f} | Prob: {prob*100:.2f}% | Gumbel Gate: {int(gate)} | BBox: {meta['bbox']}"
+        )
+        
+    best_idx, best_logit, best_prob, best_gate, best_meta = slot_details[0]
+    
     logger.info(f"\n==================================================")
-    logger.info(f"VERIFICATION RESULT:")
-    logger.info(f"Best matching visual chunk: Slot {best_slot} ({chunk_metadata[best_slot]['name']})")
-    logger.info(f"Matching BBox: {chunk_metadata[best_slot]['bbox']}")
-    logger.info(f"MaxSim Similarity Score: {best_score:.4f}")
+    logger.info(f"DENSE POLICY GATING RESULTS:")
+    logger.info(f"Best matching visual chunk: Slot {best_idx} ({best_meta['name']})")
+    logger.info(f"Page ID (0-indexed): {best_meta['page_id']} (Page {best_meta['page_id'] + 1} of the document)")
+    logger.info(f"Activation Preference Logit: {best_logit:.4f}")
+    logger.info(f"Softmax Activation Probability: {best_prob*100:.2f}%")
+    logger.info(f"Gumbel Gating Binary Output (z): {int(best_gate)}")
+    logger.info(f"\n==================================================")
+    logger.info(f"SPARSITY AUDIT SUMMARY:")
+    logger.info(f"Total slots in memory bank: {len(chunk_metadata)}")
+    logger.info(f"Activated chunks (g_k = 1): {int(active_slots_count)}")
+    logger.info(f"Frozen chunks masked out (g_k = 0): {len(chunk_metadata) - int(active_slots_count)}")
+    logger.info(f"Active Memory Ratio: {active_memory_ratio:.2f}%")
     logger.info(f"==================================================")
-    logger.info("Pipeline verified successfully through Phase 3! Embeddings are highly meaningful.")
+    logger.info("Pipeline verified successfully through Gumbel-Softmax Sparse Gating!")
 
 if __name__ == "__main__":
     main()

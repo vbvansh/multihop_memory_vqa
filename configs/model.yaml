@@ -4,6 +4,7 @@ model:
   projection_dim: 256           # Dimension for fusion and reasoning layers
   device: "cuda"                # "cuda" or "cpu"
   dtype: "bfloat16"             # "bfloat16", "float16", or "float32"
+  quantize_4bit: true           # Set true for 4-bit quantization on local 4GB GPU
   
 fusion:
   num_heads: 4                  # Number of attention heads for simple fusion

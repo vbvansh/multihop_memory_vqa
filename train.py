@@ -1,4 +1,10 @@
+import os
+import sys
 import argparse
+
+# Inject project root directory into sys.path to guarantee clean package imports
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 from trainers.trainer import ColPaliTrainer
 
 def main():

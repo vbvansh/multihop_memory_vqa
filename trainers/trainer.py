@@ -38,15 +38,36 @@ class ColPaliTrainer:
         
         # 4. Initialize Shared Model Backbone (Avoid duplicate 3B VRAM loading)
         model_name = self.model_config["model"]["name"]
-        
-        # Load unified model first
+        quantize = self.model_config["model"].get("quantize_4bit", False)
         from transformers import ColPaliForRetrieval
-        self.logger.info(f"Loading shared ColPali backbone from {model_name}...")
-        self.shared_model = ColPaliForRetrieval.from_pretrained(
-            model_name,
-            torch_dtype=self.dtype,
-            device_map=self.model_config["model"]["device"]
-        )
+        
+        if quantize and torch.cuda.is_available():
+            self.logger.info(f"Loading shared ColPali backbone {model_name} in 4-bit quantization...")
+            from transformers import BitsAndBytesConfig
+            quantization_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.float16,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_use_double_quant=True,
+                llm_int8_skip_modules=["embedding_proj_layer"]
+            )
+            self.shared_model = ColPaliForRetrieval.from_pretrained(
+                model_name,
+                quantization_config=quantization_config,
+                device_map="auto"
+            )
+        else:
+            self.logger.info(f"Loading shared ColPali backbone from {model_name} in standard {self.dtype}...")
+            self.shared_model = ColPaliForRetrieval.from_pretrained(
+                model_name,
+                torch_dtype=self.dtype,
+                device_map=self.model_config["model"]["device"]
+            )
+            
+        # Freeze all parameters of the shared ColPali backbone.
+        # This prevents gradient tracking, saves memory, and fixes bitsandbytes precision casting bugs!
+        for param in self.shared_model.parameters():
+            param.requires_grad = False
         
         # 5. Initialize Components
         self.vision_encoder = ColPaliVisionEncoder(

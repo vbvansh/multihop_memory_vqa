@@ -21,25 +21,37 @@ class DocVQADataset(Dataset):
             self._load_real_samples()
             
     def _load_debug_samples(self):
-        """Loads the 20-sample real DocVQA subset from raw_pdfs/docvqa_subset."""
-        data_dir = self.config.get("debug", {}).get("data_dir", "./debug_data/raw_pdfs/docvqa_subset")
-        json_path = os.path.join(data_dir, "metadata.json")
-        images_dir = os.path.join(data_dir, "images")
+        """Loads the 20-sample real Multi-Page DocVQA subset from raw_pdfs/mpdocvqa_subset_multipage."""
+        data_dir = self.config.get("debug", {}).get("data_dir", "./debug_data/raw_pdfs/mpdocvqa_subset_multipage")
+        json_path = os.path.join(data_dir, "all_samples_metadata.json")
         
         if not os.path.exists(json_path):
-            raise FileNotFoundError(f"20-sample DocVQA subset metadata not found at: {json_path}")
+            raise FileNotFoundError(f"20-sample Multi-Page DocVQA subset metadata not found at: {json_path}")
             
         with open(json_path, "r", encoding="utf-8") as f:
             data = json.load(f)
             
         num_samples = self.config.get("debug", {}).get("num_samples", 20)
         for item in data[:num_samples]:
-            img_path = os.path.join(images_dir, item["image"])
+            sample_id = item["sample_id"]
+            img_paths = []
+            for pg_name in item["pages"]:
+                img_path = os.path.join(data_dir, f"sample_{sample_id}", "pages", pg_name)
+                img_paths.append(img_path)
+                
+            # Safely evaluate string representation of list or use directly
+            try:
+                import ast
+                answers_list = ast.literal_eval(item["answers"])
+            except Exception:
+                answers_list = [item["answers"]]
+                
             self.samples.append({
-                "question_id": hash(item["question"]),
-                "image_path": img_path,
+                "question_id": item["question_id"],
+                "image_paths": img_paths,
                 "question": item["question"],
-                "answers": [item["answer"]]
+                "answers": answers_list,
+                "answer_page_idx": int(item["answer_page_idx"])
             })
             
     def _load_real_samples(self):
@@ -116,26 +128,40 @@ class DocVQADataset(Dataset):
     def __getitem__(self, idx):
         sample = self.samples[idx]
         
-        # Load visual page image
-        try:
-            image = Image.open(sample["image_path"]).convert("RGB")
-        except Exception as e:
-            # Fallback dummy image if load fails
-            print(f"[DocVQADataset] Warning: Failed to load {sample['image_path']}, using mock.")
-            image = Image.new("RGB", (800, 1000), color="white")
+        images = []
+        # Multi-page debug mode
+        if self.debug:
+            for img_path in sample["image_paths"]:
+                try:
+                    img = Image.open(img_path).convert("RGB")
+                    images.append(img)
+                except Exception as e:
+                    print(f"[DocVQADataset] Warning: Failed to load {img_path}, skipping.")
+        else:
+            # Single-page real mode
+            try:
+                img = Image.open(sample["image_path"]).convert("RGB")
+                images.append(img)
+            except Exception as e:
+                print(f"[DocVQADataset] Warning: Failed to load {sample['image_path']}, using fallback.")
+                images.append(Image.new("RGB", (800, 1000), color="white"))
+                
+        # Fallback if list is empty
+        if not images:
+            images.append(Image.new("RGB", (800, 1000), color="white"))
             
         return {
-            "image": image,
+            "images": images,
             "question": sample["question"],
             "answer": sample["answers"][0] if sample["answers"] else ""
         }
 
 def collate_fn(batch):
     """
-    Custom collate function to pack raw images and texts.
-    ColPali processor will handle tokenization and padding of images/texts during batching.
+    Custom collate function to pack lists of images and texts.
     """
-    images = [item["image"] for item in batch]
+    # images is a list of lists: each element is a list of PIL Images (pages of a document)
+    images = [item["images"] for item in batch]
     questions = [item["question"] for item in batch]
     answers = [item["answer"] for item in batch]
     

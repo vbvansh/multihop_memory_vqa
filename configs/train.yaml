@@ -9,7 +9,7 @@ training:
 debug:
   enable: true                 # Set true to run local quick validation / overfit test
   num_samples: 20              # Number of samples to load in debug overfit mode
-  data_dir: "./debug_data/raw_pdfs/docvqa_subset"     # Directory containing 20-sample local subset
+  data_dir: "./debug_data/raw_pdfs/mpdocvqa_subset_multipage"     # Directory containing 20-sample multipage subset
 
 paths:
   train_data_json: "path/to/real/docvqa/train.json"
