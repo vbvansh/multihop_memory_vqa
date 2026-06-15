@@ -18,6 +18,7 @@ debug:
   data_dir: "./debug_data/raw_pdfs/mpdocvqa_subset_multipage"     # Directory containing 20-sample multipage subset
 
 paths:
-  train_data_json: "path/to/real/docvqa/train.json"
-  val_data_json: "path/to/real/docvqa/val.json"
-  images_dir: "path/to/real/docvqa/images"
+  train_data_json: "/c/ujjwalb/Vansh/MPDoc_VQA_Dataset/qas/train.json"
+  val_data_json: "/c/ujjwalb/Vansh/MPDoc_VQA_Dataset/qas/val.json"
+  test_data_json: "/c/ujjwalb/Vansh/MPDoc_VQA_Dataset/qas/test.json"
+  images_dir: "/c/ujjwalb/Vansh/MPDoc_VQA_Dataset/images"

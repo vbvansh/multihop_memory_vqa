@@ -9,11 +9,16 @@ class DocVQADataset(Dataset):
     Dataset class for loading DocVQA data (images, questions, answers).
     Supports a mock debug mode with local files for quick overfitting and sanity checks.
     """
-    def __init__(self, config, is_train=True, debug=False):
+    def __init__(self, config, split="train", is_train=None, debug=False):
         self.config = config
-        self.is_train = is_train
         self.debug = debug
         
+        # Backward compatibility for is_train Boolean flag
+        if is_train is not None:
+            self.split = "train" if is_train else "val"
+        else:
+            self.split = split
+            
         self.samples = []
         if self.debug:
             self._load_debug_samples()
@@ -55,27 +60,34 @@ class DocVQADataset(Dataset):
             })
             
     def _load_real_samples(self):
-        """Loads real DocVQA dataset from configured JSON files."""
-        json_path = (
-            self.config["paths"]["train_data_json"]
-            if self.is_train
-            else self.config["paths"]["val_data_json"]
-        )
+        """Loads real Multi-Page DocVQA dataset from configured JSON files based on the split name."""
+        if self.split == "train":
+            json_path = self.config["paths"]["train_data_json"]
+        elif self.split == "val":
+            json_path = self.config["paths"]["val_data_json"]
+        elif self.split == "test":
+            json_path = self.config["paths"]["test_data_json"]
+        else:
+            raise ValueError(f"Unknown dataset split: {self.split}")
+            
         images_dir = self.config["paths"]["images_dir"]
         
         if not os.path.exists(json_path):
-            raise FileNotFoundError(f"Real DocVQA dataset annotations not found at: {json_path}")
+            raise FileNotFoundError(f"Real MPDocVQA dataset annotations not found for split '{self.split}' at: {json_path}")
             
         with open(json_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+            data_dict = json.load(f)
             
-        for item in data["questions"]:
-            img_path = os.path.join(images_dir, item["image_local_name"])
+        # Parse data list from root dictionary
+        for item in data_dict.get("data", []):
+            # Convert list of page ids to image file paths (adding .jpg extension)
+            img_paths = [os.path.join(images_dir, f"{p_id}.jpg") for p_id in item["page_ids"]]
             self.samples.append({
                 "question_id": item["questionId"],
-                "image_path": img_path,
+                "image_paths": img_paths,
                 "question": item["question"],
-                "answers": item["answers"]
+                "answers": item["answers"],
+                "answer_page_idx": int(item.get("answer_page_idx", 0))
             })
 
     def _create_mock_debug_data(self, data_dir, json_path):
@@ -129,22 +141,17 @@ class DocVQADataset(Dataset):
         sample = self.samples[idx]
         
         images = []
-        # Multi-page debug mode
-        if self.debug:
-            for img_path in sample["image_paths"]:
-                try:
-                    img = Image.open(img_path).convert("RGB")
-                    images.append(img)
-                except Exception as e:
-                    print(f"[DocVQADataset] Warning: Failed to load {img_path}, skipping.")
-        else:
-            # Single-page real mode
+        # Support loading page image paths for both debug and real mode
+        img_paths = sample.get("image_paths", [])
+        if not img_paths and "image_path" in sample:
+            img_paths = [sample["image_path"]]
+            
+        for img_path in img_paths:
             try:
-                img = Image.open(sample["image_path"]).convert("RGB")
+                img = Image.open(img_path).convert("RGB")
                 images.append(img)
             except Exception as e:
-                print(f"[DocVQADataset] Warning: Failed to load {sample['image_path']}, using fallback.")
-                images.append(Image.new("RGB", (800, 1000), color="white"))
+                print(f"[DocVQADataset] Warning: Failed to load {img_path}, skipping.")
                 
         # Fallback if list is empty
         if not images:

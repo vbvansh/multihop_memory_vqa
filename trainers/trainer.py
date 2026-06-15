@@ -134,15 +134,19 @@ class ColPaliTrainer:
             weight_decay=float(self.config["training"]["weight_decay"])
         )
         
-    def get_dataloader(self, is_train=True):
-        """Loads either the debug dataset or the real dataset."""
+    def get_dataloader(self, split="train", shuffle=None):
+        """Loads either the debug dataset or the real dataset split."""
         debug_mode = self.config["debug"]["enable"]
-        dataset = DocVQADataset(self.config, is_train=is_train, debug=debug_mode)
+        dataset = DocVQADataset(self.config, split=split, debug=debug_mode)
         
+        # Shuffle train split by default, keep validation/test order deterministic
+        if shuffle is None:
+            shuffle = (split == "train")
+            
         loader = DataLoader(
             dataset,
             batch_size=self.config["training"]["batch_size"] if not debug_mode else 2,
-            shuffle=is_train,
+            shuffle=shuffle,
             collate_fn=collate_fn,
             drop_last=False
         )
@@ -307,7 +311,23 @@ class ColPaliTrainer:
                     pred_logits = self.answer_head(updated_query, flat_memory, key_padding_mask=key_padding_mask)
                     
                     pred_ids = torch.argmax(pred_logits, dim=-1) # [1, max_answer_len]
-                    decoded_preds = self.tokenizer.batch_decode(pred_ids, skip_special_tokens=True)
+                    
+                    # Clean Decoding Logic: truncate sequence at first <eos> or <pad> token
+                    eos_id = self.tokenizer.eos_token_id
+                    pad_id = self.tokenizer.pad_token_id
+                    
+                    decoded_preds = []
+                    for seq in pred_ids:
+                        seq_list = seq.tolist()
+                        indices = [idx_t for idx_t, token in enumerate(seq_list) if token in (eos_id, pad_id)]
+                        if indices:
+                            first_idx = indices[0]
+                            truncated_seq = seq_list[:first_idx]
+                        else:
+                            truncated_seq = seq_list
+                        
+                        decoded_str = self.tokenizer.decode(truncated_seq, skip_special_tokens=True)
+                        decoded_preds.append(decoded_str.strip())
                     
                     predictions.extend(decoded_preds)
                     ground_truths.append([answer])
@@ -329,16 +349,22 @@ class ColPaliTrainer:
         
     def run(self):
         """Runs the main training and evaluation loop."""
-        self.logger.info("Loading dataset loader...")
-        loader = self.get_dataloader(is_train=True)
+        self.logger.info("Loading dataset loaders...")
+        debug_mode = self.config["debug"]["enable"]
+        
+        # Load train and validation splits
+        train_loader = self.get_dataloader(split="train")
+        val_loader = self.get_dataloader(split="val") if not debug_mode else train_loader
         
         self.logger.info("Starting training loop...")
         epochs = self.config["training"]["epochs"]
         
         for epoch in range(epochs):
-            self.train_epoch(loader, epoch)
+            self.train_epoch(train_loader, epoch)
             
-            # Run quick evaluation on training debug samples to check overfitting
-            if self.config["debug"]["enable"]:
+            if debug_mode:
                 self.logger.info("Evaluating overfit performance on debug samples:")
-                self.evaluate(loader)
+                self.evaluate(train_loader)
+            else:
+                self.logger.info("Evaluating validation performance:")
+                self.evaluate(val_loader)
