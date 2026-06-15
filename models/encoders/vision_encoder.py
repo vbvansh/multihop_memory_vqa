@@ -20,7 +20,8 @@ class ColPaliVisionEncoder(nn.Module):
             self.model = ColPaliForRetrieval.from_pretrained(
                 model_name,
                 torch_dtype=dtype,
-                device_map=device
+                device_map=device,
+                low_cpu_mem_usage=True
             )
             
         # Initialize processor

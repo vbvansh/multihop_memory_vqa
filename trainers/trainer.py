@@ -76,14 +76,16 @@ class ColPaliTrainer:
                 self.shared_model = ColPaliForRetrieval.from_pretrained(
                     model_name,
                     quantization_config=quantization_config,
-                    device_map="auto"
+                    device_map="auto",
+                    low_cpu_mem_usage=True
                 )
             else:
                 self.logger.info(f"Loading shared ColPali backbone from {model_name} in standard {self.dtype}...")
                 self.shared_model = ColPaliForRetrieval.from_pretrained(
                     model_name,
                     torch_dtype=self.dtype,
-                    device_map=self.config["model"]["device"]
+                    device_map=self.config["model"]["device"],
+                    low_cpu_mem_usage=True
                 )
                 
             # Freeze all parameters of the shared ColPali backbone.

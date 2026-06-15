@@ -79,14 +79,16 @@ def main():
         shared_model = ColPaliForRetrieval.from_pretrained(
             model_name,
             quantization_config=quantization_config,
-            device_map="auto"
+            device_map="auto",
+            low_cpu_mem_usage=True
         )
     else:
         logger.info(f"Loading pre-trained ColPali backbone {model_name} in standard {dtype}...")
         shared_model = ColPaliForRetrieval.from_pretrained(
             model_name,
             torch_dtype=dtype,
-            device_map="cuda" if torch.cuda.is_available() else "cpu"
+            device_map="cuda" if torch.cuda.is_available() else "cpu",
+            low_cpu_mem_usage=True
         )
         
     # Freeze all parameters of the shared ColPali backbone.
