@@ -40,18 +40,19 @@ class AnswerHead(nn.Module):
         self.decoder_projection = nn.Sequential(
             nn.Linear(self.projection_dim, self.projection_dim),
             nn.ReLU(),
-            nn.Linear(self.projection_dim, self.max_answer_len * self.embedding_dim)
+            nn.Linear(self.projection_dim, self.max_answer_len * self.projection_dim)
         )
         
         # Final output projection to vocabulary logits
-        self.vocab_projection = nn.Linear(self.embedding_dim, vocab_size)
+        self.vocab_projection = nn.Linear(self.projection_dim, vocab_size)
         
-    def forward(self, query_embeddings, doc_embeddings):
+    def forward(self, query_embeddings, doc_embeddings, key_padding_mask=None):
         """
         Fuses query and document embeddings and predicts answer token logits.
         Args:
             query_embeddings: [batch_size, num_query_tokens, D]
             doc_embeddings: [batch_size, num_patches, D]
+            key_padding_mask: [batch_size, num_patches] optional mask indicating inactive patches
         Returns:
             logits: Predicted token logits [batch_size, max_answer_len, vocab_size]
         """
@@ -62,7 +63,8 @@ class AnswerHead(nn.Module):
         attn_output, _ = self.cross_attention(
             query=query_embeddings,
             key=doc_embeddings,
-            value=doc_embeddings
+            value=doc_embeddings,
+            key_padding_mask=key_padding_mask
         )
         
         # Residual connection and normalization
@@ -73,8 +75,8 @@ class AnswerHead(nn.Module):
         features = self.pooler(pooled) # [batch_size, projection_dim]
         
         # 3. Project to sequence of tokens
-        seq_features = self.decoder_projection(features) # [batch_size, max_answer_len * D]
-        seq_features = seq_features.view(batch_size, self.max_answer_len, self.embedding_dim)
+        seq_features = self.decoder_projection(features) # [batch_size, max_answer_len * projection_dim]
+        seq_features = seq_features.view(batch_size, self.max_answer_len, self.projection_dim)
         
         # Map to vocabulary logits
         logits = self.vocab_projection(seq_features) # [batch_size, max_answer_len, vocab_size]

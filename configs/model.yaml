@@ -1,7 +1,7 @@
 model:
   name: "vidore/colpali-v1.3-hf"
   embedding_dim: 128            # ColPali late-interaction vector dimension (D)
-  projection_dim: 256           # Dimension for fusion and reasoning layers
+  projection_dim: 512           # Dimension for fusion and reasoning layers
   device: "cuda"                # "cuda" or "cpu"
   dtype: "bfloat16"             # "bfloat16", "float16", or "float32"
   quantize_4bit: true           # Set true for 4-bit quantization on local 4GB GPU

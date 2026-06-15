@@ -151,6 +151,7 @@ class DocVQADataset(Dataset):
             images.append(Image.new("RGB", (800, 1000), color="white"))
             
         return {
+            "question_id": sample.get("question_id", idx),
             "images": images,
             "question": sample["question"],
             "answer": sample["answers"][0] if sample["answers"] else ""
@@ -164,9 +165,11 @@ def collate_fn(batch):
     images = [item["images"] for item in batch]
     questions = [item["question"] for item in batch]
     answers = [item["answer"] for item in batch]
+    question_ids = [item["question_id"] for item in batch]
     
     return {
         "images": images,
         "questions": questions,
-        "answers": answers
+        "answers": answers,
+        "question_ids": question_ids
     }

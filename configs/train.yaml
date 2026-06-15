@@ -1,14 +1,20 @@
 training:
   batch_size: 2
-  epochs: 10
-  lr: 2e-5
+  epochs: 50
+  lr: 1e-3
   weight_decay: 0.01
   grad_clip: 1.0
   seed: 42
+  num_hops: 3                  # Number of reasoning attention hops
+  lambda_sparsity: 0.1         # Weight for active memory ratio loss
+  lambda_entropy: 0.01         # Weight for policy router confidence loss
+  target_sparsity: 0.25        # Target 25% active chunks (1 page out of 4)
   
 debug:
   enable: true                 # Set true to run local quick validation / overfit test
-  num_samples: 20              # Number of samples to load in debug overfit mode
+  use_precomputed_embeddings: true # Read precomputed embeddings to bypass backbone
+  precomputed_dir: "./debug_data/precomputed_embeddings"
+  num_samples: 200              # Number of samples to load in debug overfit mode
   data_dir: "./debug_data/raw_pdfs/mpdocvqa_subset_multipage"     # Directory containing 20-sample multipage subset
 
 paths:

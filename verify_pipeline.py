@@ -13,6 +13,9 @@ from trainers.trainer import ColPaliTrainer
 from models.memory.memory_bank import MemoryBank
 from models.memory.memory_router import MemoryRouter
 from models.memory.gumbel_router import GumbelRouter
+from models.reasoning.multi_hop import MultiHopReasoning
+from models.decoder.answer_head import AnswerHead
+from losses.sparsity_loss import SparsityLoss
 from datasets.docvqa import DocVQADataset, collate_fn
 from utils.logger import setup_logger
 
@@ -91,19 +94,30 @@ def main():
     for param in shared_model.parameters():
         param.requires_grad = False
     
-    # 3. Instantiate Encoders, Memory Bank, Policy Router and Gumbel Router
+    # Merge configurations
+    config = {**model_config, **train_config}
+    
+    # 3. Instantiate Encoders, Memory Bank, Routers, Multi-Hop Reasoning and Answer Head
     from models.encoders.vision_encoder import ColPaliVisionEncoder
     from models.encoders.question_encoder import ColPaliQuestionEncoder
     
     vision_encoder = ColPaliVisionEncoder(model_name=model_name, device=device, dtype=dtype, shared_model=shared_model)
     question_encoder = ColPaliQuestionEncoder(model_name=model_name, device=device, dtype=dtype, shared_model=shared_model)
-    memory_bank = MemoryBank(model_config)
-    router = MemoryRouter(model_config).to(device).to(dtype)
+    
+    tokenizer = vision_encoder.processor.tokenizer
+    vocab_size = tokenizer.vocab_size
+    logger.info(f"Loaded tokenizer with vocabulary size: {vocab_size}")
+    
+    memory_bank = MemoryBank(config)
+    router = MemoryRouter(config).to(device).to(dtype)
     gumbel = GumbelRouter(temperature=0.5).to(device)
+    multi_hop = MultiHopReasoning(config).to(device).to(dtype)
+    answer_head = AnswerHead(config, vocab_size=vocab_size).to(device).to(dtype)
+    sparsity_loss_fn = SparsityLoss(config, ignore_index=tokenizer.pad_token_id)
     
     # 4. Load the 20-sample Multi-Page DocVQA subset
     logger.info("Loading 20-sample real Multi-Page DocVQA subset...")
-    dataset = DocVQADataset(train_config, is_train=True, debug=True)
+    dataset = DocVQADataset(config, is_train=True, debug=True)
     logger.info(f"Dataset successfully loaded. Total samples: {len(dataset)}")
     
     # 5. Run Verification on the multi-page sample
@@ -204,7 +218,65 @@ def main():
     logger.info(f"Frozen chunks masked out (g_k = 0): {len(chunk_metadata) - int(active_slots_count)}")
     logger.info(f"Active Memory Ratio: {active_memory_ratio:.2f}%")
     logger.info(f"==================================================")
-    logger.info("Pipeline verified successfully through Gumbel-Softmax Sparse Gating!")
+    
+    # Step F: Multi-Hop Reasoning Cell (Phase 7)
+    logger.info("\n[Phase 7] Running Multi-Hop Reasoning Cell over gated memory slots...")
+    with torch.no_grad():
+        updated_query_emb, key_padding_mask = multi_hop(
+            query_emb.to(device).to(dtype),
+            chunk_embeddings.to(device).to(dtype),
+            z.to(device).to(dtype)
+        )
+    logger.info(f"-> Updated Query Shape: {updated_query_emb.shape} (Reasoning state injected)")
+    logger.info(f"-> Active/Inactive Mask Shape: {key_padding_mask.shape}")
+    
+    # Step G: Gated Answer Head (Phase 7)
+    logger.info("\n[Phase 7] Fusing updated query and memory patches through Gated Answer Head...")
+    # Flatten memory slots: [batch_size, total_slots * 256, D]
+    flat_memory = chunk_embeddings.reshape(1, -1, config["model"]["embedding_dim"]).to(device).to(dtype)
+    with torch.no_grad():
+        pred_logits = answer_head(
+            updated_query_emb.to(dtype),
+            flat_memory,
+            key_padding_mask=key_padding_mask
+        )
+    logger.info(f"-> Predicted Answer Logits Shape: {pred_logits.shape} [batch, max_answer_len, vocab_size]")
+    
+    # Decode predicted token IDs for logging
+    pred_token_ids = torch.argmax(pred_logits, dim=-1) # [1, max_answer_len]
+    decoded_answer = tokenizer.batch_decode(pred_token_ids, skip_special_tokens=True)[0]
+    logger.info(f"-> Decoded Gated VQA Prediction (Untrained): '{decoded_answer}'")
+    
+    # Step H: Sparsity & Entropy Regularization Loss Calculation (Phase 8)
+    logger.info("\n[Phase 8] Computing Sparsity and Entropy Regularization Loss...")
+    targets = tokenizer(
+        [sample["answer"]],
+        padding="max_length",
+        max_length=config["decoder"]["max_answer_len"],
+        truncation=True,
+        return_tensors="pt"
+    )["input_ids"].to(device)
+    
+    # Flatten logits and targets to compute cross entropy
+    flat_logits = pred_logits.view(-1, pred_logits.size(-1))
+    flat_targets = targets.view(-1)
+    
+    with torch.no_grad():
+        total_loss, loss_details = sparsity_loss_fn(
+            flat_logits,
+            flat_targets,
+            logits.to(device),
+            z.to(device)
+        )
+        
+    logger.info(f"==================================================")
+    logger.info(f"COMPOSITE LOSS AUDIT:")
+    logger.info(f"-> Total Loss: {loss_details['loss_total']:.6f}")
+    logger.info(f"-> VQA Cross-Entropy Loss: {loss_details['loss_vqa']:.6f}")
+    logger.info(f"-> Sparsity Penalty (lambda={config['training']['lambda_sparsity']}): {loss_details['loss_sparsity']:.6f}")
+    logger.info(f"-> Router Entropy Penalty (lambda={config['training']['lambda_entropy']}): {loss_details['loss_entropy']:.6f}")
+    logger.info(f"==================================================")
+    logger.info("Pipeline verified successfully through Gated Answer Prediction & Sparsity Loss!")
 
 if __name__ == "__main__":
     main()
