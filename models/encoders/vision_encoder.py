@@ -27,20 +27,27 @@ class ColPaliVisionEncoder(nn.Module):
         # Initialize processor
         self.processor = ColPaliProcessor.from_pretrained(model_name)
         
-    def forward(self, images):
+    def forward(self, images, sub_batch_size=4):
         """
         Encodes a list of PIL Images into a batched representation of patch embeddings.
         Args:
             images: List of PIL.Image objects
+            sub_batch_size: Int, max number of images to process in a single forward pass
         Returns:
             image_embeddings: Tensor of shape [batch_size, num_patches, embedding_dim]
         """
-        # Process visual inputs
-        inputs = self.processor(images=images, return_tensors="pt")
-        inputs = {k: v.to(self.device) for k, v in inputs.items()}
-        
-        # Forward pass through ColPali vision tower
-        outputs = self.model(**inputs)
-        
+        if not images:
+            return torch.empty(0, device=self.device)
+            
+        embeddings_list = []
+        for i in range(0, len(images), sub_batch_size):
+            chunk = images[i : i + sub_batch_size]
+            inputs = self.processor(images=chunk, return_tensors="pt")
+            inputs = {k: v.to(self.device) for k, v in inputs.items()}
+            
+            # Forward pass through ColPali vision tower
+            outputs = self.model(**inputs)
+            embeddings_list.append(outputs.embeddings)
+            
         # ColPali outputs patch token embeddings of shape [batch_size, num_patches, embedding_dim]
-        return outputs.embeddings
+        return torch.cat(embeddings_list, dim=0)
