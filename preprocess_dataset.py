@@ -5,6 +5,7 @@ import yaml
 import argparse
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+import gc
 
 # Inject project root directory into sys.path to guarantee clean package imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -99,8 +100,26 @@ def main():
         
         # 4. Load Dataset
         dataset = DocVQADataset(config, split=split, debug=args.debug)
-        print(f"Loaded {len(dataset)} samples for split '{split}'")
+        original_count = len(dataset)
+        print(f"Loaded {original_count} samples for split '{split}'")
         
+        # Filter out samples that have already been precomputed to allow fast resumption
+        filtered_samples = []
+        for sample in dataset.samples:
+            q_id = sample["question_id"]
+            v_path = os.path.join(precomputed_dir, f"vision_{q_id}.pt")
+            q_path = os.path.join(precomputed_dir, f"question_{q_id}.pt")
+            if not (os.path.exists(v_path) and os.path.exists(q_path)):
+                filtered_samples.append(sample)
+        dataset.samples = filtered_samples
+        
+        print(f"Resuming precomputation. Skipped {original_count - len(dataset)} already processed samples.")
+        print(f"Remaining samples to process: {len(dataset)}")
+        
+        if len(dataset) == 0:
+            print(f"Split '{split}' is already fully precomputed!")
+            continue
+            
         loader = DataLoader(
             dataset,
             batch_size=args.batch_size,
@@ -145,6 +164,17 @@ def main():
             for j, q_id in enumerate(batch["question_ids"]):
                 q_emb = query_embs[j : j + 1].cpu()
                 torch.save(q_emb, os.path.join(precomputed_dir, f"question_{q_id}.pt"))
+                
+            # Clean up memory to prevent CPU/GPU memory leaks
+            for img in all_images:
+                img.close()
+            del all_images
+            del all_embs
+            del query_embs
+            del batch
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
                 
     print(f"\nAll requested splits successfully precomputed and saved in {precomputed_dir}!")
 

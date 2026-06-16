@@ -151,7 +151,7 @@ class DocVQADataset(Dataset):
                 img = Image.open(img_path).convert("RGB")
                 images.append(img)
             except Exception as e:
-                print(f"[DocVQADataset] Warning: Failed to load {img_path}, skipping.")
+                print(f"[DocVQADataset] Warning: Failed to load {img_path}. Error: {e}. Skipping.")
                 
         # Fallback if list is empty
         if not images:
