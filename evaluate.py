@@ -21,6 +21,13 @@ def main():
         default="./configs/train.yaml", 
         help="Path to training config file"
     )
+    parser.add_argument(
+        "--split", 
+        type=str, 
+        default="val", 
+        choices=["train", "val", "test"], 
+        help="Dataset split to evaluate"
+    )
     args = parser.parse_args()
     
     # Initialize trainer
@@ -29,11 +36,11 @@ def main():
         train_config_path=args.train_config
     )
     
-    # Load validation dataloader (is_train=False)
-    loader = trainer.get_dataloader(is_train=False)
+    # Load dataloader for specified split
+    loader = trainer.get_dataloader(split=args.split)
     
     # Run evaluation
-    trainer.logger.info("Starting validation evaluation...")
+    trainer.logger.info(f"Starting evaluation on split '{args.split}'...")
     trainer.evaluate(loader)
 
 if __name__ == "__main__":

@@ -35,8 +35,12 @@ class ColPaliTrainer:
         # Merge model and train configs
         self.config = {**self.model_config, **self.train_config}
             
-        # 2. Setup Logging
-        self.logger = setup_logger()
+        # 2. Setup Logging and Checkpoint Directories
+        self.logs_dir = self.config["paths"].get("logs_dir", "./logs")
+        self.checkpoints_dir = self.config["paths"].get("checkpoints_dir", "./checkpoints")
+        os.makedirs(self.checkpoints_dir, exist_ok=True)
+        
+        self.logger = setup_logger(log_dir=self.logs_dir)
         self.logger.info("Initializing Sparse Routing ColPali Trainer...")
         
         # 3. Setup Hardware Device
@@ -267,6 +271,28 @@ class ColPaliTrainer:
         self.logger.info(f"Epoch {epoch+1} Complete. Average Training Loss: {avg_loss:.4f}")
         return avg_loss
         
+    def save_checkpoint(self, epoch, val_anls, best_anls, is_best=False):
+        """Saves a checkpoint containing only the trainable parameters and optimizer states."""
+        checkpoint = {
+            "epoch": epoch,
+            "best_anls": best_anls,
+            "val_anls": val_anls,
+            "dual_stream_state": self.dual_stream.state_dict(),
+            "router_state": self.router.state_dict(),
+            "multi_hop_state": self.multi_hop.state_dict(),
+            "answer_head_state": self.answer_head.state_dict(),
+            "optimizer_state": self.optimizer.state_dict(),
+            "config": self.config
+        }
+        
+        last_path = os.path.join(self.checkpoints_dir, "checkpoint_last.pt")
+        torch.save(checkpoint, last_path)
+        
+        if is_best:
+            best_path = os.path.join(self.checkpoints_dir, "checkpoint_best.pt")
+            torch.save(checkpoint, best_path)
+            self.logger.info(f"Saved new best checkpoint to {best_path} with ANLS: {val_anls:.4f}")
+
     def evaluate(self, loader):
         """Runs validation and decodes predicted answer tokens back to text strings."""
         self.dual_stream.eval()
@@ -276,6 +302,8 @@ class ColPaliTrainer:
         
         predictions = []
         ground_truths = []
+        total_eval_loss = 0.0
+        sample_count = 0
         
         precomputed_dir = self.config["debug"]["precomputed_dir"]
         
@@ -285,6 +313,7 @@ class ColPaliTrainer:
                 for i in range(batch_size):
                     question_id = batch["question_ids"][i]
                     answer = batch["answers"][i]
+                    sample_count += 1
                     
                     # 1. Load or encode visual page representations
                     if self.use_precomputed:
@@ -324,6 +353,26 @@ class ColPaliTrainer:
                     flat_memory = contextualized_patches.reshape(1, -1, self.config["model"]["embedding_dim"])
                     pred_logits = self.answer_head(updated_query, flat_memory, key_padding_mask=key_padding_mask)
                     
+                    # Compute VQA & Sparsity Loss for evaluation tracking
+                    targets = self.tokenizer(
+                        [answer],
+                        padding="max_length",
+                        max_length=self.config["decoder"]["max_answer_len"],
+                        truncation=True,
+                        return_tensors="pt"
+                    )["input_ids"].to(self.device)
+                    
+                    flat_logits = pred_logits.view(-1, pred_logits.size(-1))
+                    flat_targets = targets.view(-1)
+                    
+                    loss, _ = self.sparsity_loss_fn(
+                        flat_logits,
+                        flat_targets,
+                        router_logits,
+                        z
+                    )
+                    total_eval_loss += loss.item()
+                    
                     pred_ids = torch.argmax(pred_logits, dim=-1) # [1, max_answer_len]
                     
                     # Clean Decoding Logic: truncate sequence at first <eos> or <pad> token
@@ -355,14 +404,15 @@ class ColPaliTrainer:
             total_em += calculate_exact_match(pred, gts)
             self.logger.info(f"Pred: '{pred}' | Ground Truth: '{gts[0]}'")
             
+        avg_loss = total_eval_loss / sample_count if sample_count else 0.0
         avg_anls = total_anls / len(predictions) if predictions else 0.0
         avg_em = total_em / len(predictions) if predictions else 0.0
         
-        self.logger.info(f"Evaluation Complete. ANLS: {avg_anls:.4f} | Exact Match: {avg_em:.4f}")
-        return avg_anls, avg_em
+        self.logger.info(f"Evaluation Complete. Loss: {avg_loss:.4f} | ANLS: {avg_anls:.4f} | Exact Match: {avg_em:.4f}")
+        return avg_loss, avg_anls, avg_em
         
     def run(self):
-        """Runs the main training and evaluation loop."""
+        """Runs the main training and evaluation loop with validation and checkpoint saving."""
         self.logger.info("Loading dataset loaders...")
         debug_mode = self.config["debug"]["enable"]
         
@@ -373,12 +423,41 @@ class ColPaliTrainer:
         self.logger.info("Starting training loop...")
         epochs = self.config["training"]["epochs"]
         
+        best_anls = -1.0
+        
         for epoch in range(epochs):
-            self.train_epoch(train_loader, epoch)
+            train_loss = self.train_epoch(train_loader, epoch)
             
             if debug_mode:
                 self.logger.info("Evaluating overfit performance on debug samples:")
-                self.evaluate(train_loader)
+                val_loss, val_anls, val_em = self.evaluate(train_loader)
             else:
                 self.logger.info("Evaluating validation performance:")
-                self.evaluate(val_loader)
+                val_loss, val_anls, val_em = self.evaluate(val_loader)
+                
+            # Check for best ANLS performance
+            is_best = val_anls > best_anls
+            if is_best:
+                best_anls = val_anls
+                
+            # Save checkpoints
+            self.save_checkpoint(epoch + 1, val_anls, best_anls, is_best=is_best)
+            
+            self.logger.info(
+                f"[Summary] Epoch {epoch+1}/{epochs} | "
+                f"Train Loss: {train_loss:.4f} | "
+                f"Val Loss: {val_loss:.4f} | "
+                f"Val ANLS: {val_anls:.4f} | "
+                f"Val EM: {val_em:.4f} | "
+                f"Best ANLS: {best_anls:.4f}"
+            )
+            
+        # Post-Training: Run final evaluation on the test split
+        self.logger.info("Starting final evaluation on test split...")
+        test_loader = self.get_dataloader(split="test")
+        test_loss, test_anls, test_em = self.evaluate(test_loader)
+        self.logger.info(
+            f"[Final Test Metrics] Test Loss: {test_loss:.4f} | "
+            f"Test ANLS: {test_anls:.4f} | "
+            f"Test EM: {test_em:.4f}"
+        )
