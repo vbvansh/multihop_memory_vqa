@@ -1,7 +1,7 @@
 training:
   batch_size: 2
-  epochs: 50
-  lr: 1e-3
+  epochs: 200
+  lr: 2e-4
   weight_decay: 0.01
   grad_clip: 1.0
   seed: 42
@@ -11,14 +11,14 @@ training:
   target_sparsity: 0.25        # Target 25% active chunks (1 page out of 4)
   
 debug:
-  enable: true                 # Set true to run local quick validation / overfit test
+  enable: false                 # Set true to run local quick validation / overfit test
   use_precomputed_embeddings: true # Read precomputed embeddings to bypass backbone
   precomputed_dir: "./debug_data/precomputed_embeddings"
   num_samples: 200              # Number of samples to load in debug overfit mode
   data_dir: "./debug_data/raw_pdfs/mpdocvqa_subset_multipage"     # Directory containing 20-sample multipage subset
 
 paths:
-  train_data_json: "/c/ujjwalb/Vansh/MPDoc_VQA_Dataset/qas/train.json"
-  val_data_json: "/c/ujjwalb/Vansh/MPDoc_VQA_Dataset/qas/val.json"
-  test_data_json: "/c/ujjwalb/Vansh/MPDoc_VQA_Dataset/qas/test.json"
-  images_dir: "/c/ujjwalb/Vansh/MPDoc_VQA_Dataset/images"
+  train_data_json: "/c/ujjwalb/Vansh/Datasets/MPDoc_VQA_Dataset/qas/train.json"
+  val_data_json: "/c/ujjwalb/Vansh/Datasets/MPDoc_VQA_Dataset/qas/val.json"
+  test_data_json: "/c/ujjwalb/Vansh/Datasets/MPDoc_VQA_Dataset/qas/test.json"
+  images_dir: "/c/ujjwalb/Vansh/Datasets/MPDoc_VQA_Dataset/images"

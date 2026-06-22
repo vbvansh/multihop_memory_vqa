@@ -9,6 +9,7 @@ import yaml
 from models.encoders.vision_encoder import ColPaliVisionEncoder
 from models.encoders.question_encoder import ColPaliQuestionEncoder
 from models.memory.memory_bank import MemoryBank
+from models.reasoning.dual_stream import DualStreamProcessor
 from models.memory.memory_router import MemoryRouter
 from models.memory.gumbel_router import GumbelRouter
 from models.reasoning.multi_hop import MultiHopReasoning
@@ -114,17 +115,19 @@ class ColPaliTrainer:
         
         # Instantiate sparse memory routing network components
         self.memory_bank = MemoryBank(self.config)
+        self.dual_stream = DualStreamProcessor(self.config).to(self.device).to(self.dtype)
         self.router = MemoryRouter(self.config).to(self.device).to(self.dtype)
         self.gumbel = GumbelRouter(temperature=0.5).to(self.device)
         self.multi_hop = MultiHopReasoning(self.config).to(self.device).to(self.dtype)
         self.answer_head = AnswerHead(self.config, vocab_size=vocab_size).to(self.device).to(self.dtype)
         
         # Sparsity & Entropy Regularization Loss
-        self.sparsity_loss_fn = SparsityLoss(self.config, ignore_index=self.tokenizer.pad_token_id)
+        self.sparsity_loss_fn = SparsityLoss(self.config, ignore_index=-100)
         
         # 6. Set up Optimizer
-        # Optimize the dynamic router, multi-hop cell, and answer prediction layers
+        # Optimize the dual stream processor, dynamic router, multi-hop cell, and answer prediction layers
         trainable_params = (
+            list(self.dual_stream.parameters()) +
             list(self.router.parameters()) +
             list(self.multi_hop.parameters()) +
             list(self.answer_head.parameters())
@@ -155,6 +158,7 @@ class ColPaliTrainer:
         return loader
         
     def train_epoch(self, loader, epoch):
+        self.dual_stream.train()
         self.router.train()
         self.multi_hop.train()
         self.answer_head.train()
@@ -205,15 +209,18 @@ class ColPaliTrainer:
                     with torch.no_grad():
                         query_emb = self.question_encoder([question]).to(self.device).to(self.dtype)
                     
-                # 4. Run dynamic routing & gating
-                router_logits = self.router(query_emb, chunk_embeddings)
+                # 4. Run decoupled dual-stream processing
+                c_q, m_tilde, contextualized_patches = self.dual_stream(query_emb, chunk_embeddings)
+                
+                # 5. Run dynamic routing & gating
+                router_logits = self.router(c_q, m_tilde)
                 z = self.gumbel(router_logits, hard=True)
                 
-                # 5. Multi-Hop Reasoning
-                updated_query, key_padding_mask = self.multi_hop(query_emb, chunk_embeddings, z)
+                # 6. Multi-Hop Reasoning over contextualized patches
+                updated_query, key_padding_mask = self.multi_hop(query_emb, contextualized_patches, z)
                 
-                # 6. Gated Answer prediction
-                flat_memory = chunk_embeddings.reshape(1, -1, self.config["model"]["embedding_dim"])
+                # 7. Gated Answer prediction
+                flat_memory = contextualized_patches.reshape(1, -1, self.config["model"]["embedding_dim"])
                 pred_logits = self.answer_head(updated_query, flat_memory, key_padding_mask=key_padding_mask)
                 
                 # 7. Tokenize target labels
@@ -245,6 +252,7 @@ class ColPaliTrainer:
             
             # Step parameters after accumulating gradients across the batch
             trainable_params = (
+                list(self.dual_stream.parameters()) + 
                 list(self.router.parameters()) + 
                 list(self.multi_hop.parameters()) + 
                 list(self.answer_head.parameters())
@@ -261,6 +269,7 @@ class ColPaliTrainer:
         
     def evaluate(self, loader):
         """Runs validation and decodes predicted answer tokens back to text strings."""
+        self.dual_stream.eval()
         self.router.eval()
         self.multi_hop.eval()
         self.answer_head.eval()
@@ -301,15 +310,18 @@ class ColPaliTrainer:
                         question = batch["questions"][i]
                         query_emb = self.question_encoder([question]).to(self.device).to(self.dtype)
                     
+                    # Dual-Stream
+                    c_q, m_tilde, contextualized_patches = self.dual_stream(query_emb, chunk_embeddings)
+                    
                     # Routing
-                    router_logits = self.router(query_emb, chunk_embeddings)
+                    router_logits = self.router(c_q, m_tilde)
                     z = self.gumbel(router_logits, hard=True)
                     
                     # Multi-Hop
-                    updated_query, key_padding_mask = self.multi_hop(query_emb, chunk_embeddings, z)
+                    updated_query, key_padding_mask = self.multi_hop(query_emb, contextualized_patches, z)
                     
                     # Gated Answer Head
-                    flat_memory = chunk_embeddings.reshape(1, -1, self.config["model"]["embedding_dim"])
+                    flat_memory = contextualized_patches.reshape(1, -1, self.config["model"]["embedding_dim"])
                     pred_logits = self.answer_head(updated_query, flat_memory, key_padding_mask=key_padding_mask)
                     
                     pred_ids = torch.argmax(pred_logits, dim=-1) # [1, max_answer_len]

@@ -25,31 +25,25 @@ class MemoryRouter(nn.Module):
             nn.Linear(self.projection_dim, 2)  # Logits: [0: Inactivate, 1: Activate]
         )
         
-    def forward(self, query_embeddings, slot_embeddings):
+    def forward(self, c_q, m_tilde):
         """
         Computes 2D logits representing activation preferences for all memory slots.
         Args:
-            query_embeddings: Tensor of shape [batch_size, num_query_tokens, D]
-            slot_embeddings: Tensor of shape [batch_size, num_slots, num_patches_per_chunk, D]
+            c_q: Contextualized query tensor of shape [batch_size, D]
+            m_tilde: Contextualized slot tensor of shape [batch_size, num_slots, D]
         Returns:
             logits: Tensor of shape [batch_size, num_slots, 2]
         """
-        batch_size = query_embeddings.shape[0]
-        num_slots = slot_embeddings.shape[1]
+        batch_size = c_q.shape[0]
+        num_slots = m_tilde.shape[1]
         
-        # 1. Pool query embeddings: average over query tokens to get c_q [batch_size, D]
-        c_q = torch.mean(query_embeddings, dim=1)  # [batch_size, D]
-        
-        # 2. Pool slot embeddings: average over visual patches to get m_k [batch_size, num_slots, D]
-        m_k = torch.mean(slot_embeddings, dim=2)  # [batch_size, num_slots, D]
-        
-        # 3. Expand c_q along slot dimension: [batch_size, num_slots, D]
+        # 1. Expand c_q along slot dimension: [batch_size, num_slots, D]
         c_q_expanded = c_q.unsqueeze(1).expand(-1, num_slots, -1)
         
-        # 4. Construct interaction features: [c_q; m_k; c_q * m_k]
+        # 2. Construct interaction features: [c_q; m_tilde; c_q * m_tilde]
         # Shape: [batch_size, num_slots, 3 * D]
         interaction_features = torch.cat(
-            [c_q_expanded, m_k, c_q_expanded * m_k], 
+            [c_q_expanded, m_tilde, c_q_expanded * m_tilde], 
             dim=-1
         )
         
@@ -64,3 +58,4 @@ class MemoryRouter(nn.Module):
         logits = logits_flat.view(batch_size, num_slots, 2)
         
         return logits
+

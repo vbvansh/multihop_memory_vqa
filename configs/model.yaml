@@ -13,3 +13,9 @@ fusion:
 decoder:
   num_classes: 2                # For span prediction (start and end logits)
   max_answer_len: 20            # Max length of predicted answer span
+
+dual_stream:
+  num_heads: 4                  # Number of heads for cross and self-attention
+  num_layers: 1                 # Number of transformer layers in Stream B
+  dropout: 0.1
+

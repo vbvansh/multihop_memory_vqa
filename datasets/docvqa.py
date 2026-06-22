@@ -86,7 +86,7 @@ class DocVQADataset(Dataset):
                 "question_id": item["questionId"],
                 "image_paths": img_paths,
                 "question": item["question"],
-                "answers": item["answers"],
+                "answers": item.get("answers", [""]),
                 "answer_page_idx": int(item.get("answer_page_idx", 0))
             })
 

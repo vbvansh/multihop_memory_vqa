@@ -11,6 +11,7 @@ from PIL import Image
 
 from trainers.trainer import ColPaliTrainer
 from models.memory.memory_bank import MemoryBank
+from models.reasoning.dual_stream import DualStreamProcessor
 from models.memory.memory_router import MemoryRouter
 from models.memory.gumbel_router import GumbelRouter
 from models.reasoning.multi_hop import MultiHopReasoning
@@ -111,6 +112,7 @@ def main():
     logger.info(f"Loaded tokenizer with vocabulary size: {vocab_size}")
     
     memory_bank = MemoryBank(config)
+    dual_stream = DualStreamProcessor(config).to(device).to(dtype)
     router = MemoryRouter(config).to(device).to(dtype)
     gumbel = GumbelRouter(temperature=0.5).to(device)
     multi_hop = MultiHopReasoning(config).to(device).to(dtype)
@@ -123,7 +125,7 @@ def main():
     logger.info(f"Dataset successfully loaded. Total samples: {len(dataset)}")
     
     # 5. Run Verification on the multi-page sample
-    sample_idx = 2  # Sample 2: "What is the name of the company?" (Ground Truth: "ITC Limited", located on Page 11 of 12)
+    sample_idx = 162  # Sample 2: "What is the name of the company?" (Ground Truth: "ITC Limited", located on Page 11 of 12)
     sample = dataset[sample_idx]
     
     logger.info(f"\n--- Running Verification on Multi-Page Sample {sample_idx} ---")
@@ -159,11 +161,22 @@ def main():
         query_emb = question_encoder([sample["question"]])
     logger.info(f"-> Generated Question Embedding Shape: {query_emb.shape}") # [1, num_query_tokens, D]
     
-    # Step D: Policy Router Logits (Phase 4 / 5)
-    logger.info("\n[Phase 4/5] Running Question-Guided Policy Router MLP...")
+    # Step D: Decoupled Dual-Stream Processing (Phase 4)
+    logger.info("\n[Phase 4] Running Decoupled Dual-Stream Pre-Fusion Processing...")
+    with torch.no_grad():
+        c_q, m_tilde, contextualized_patches = dual_stream(
+            query_emb.to(device).to(dtype),
+            chunk_embeddings.to(device).to(dtype)
+        )
+    logger.info(f"-> Stream A Context Vector c_q Shape: {c_q.shape}")
+    logger.info(f"-> Stream B Contextualized Slots m_tilde Shape: {m_tilde.shape}")
+    logger.info(f"-> Stream B Contextualized Patches Shape: {contextualized_patches.shape}")
+    
+    # Step D.2: Policy Router Logits (Phase 5)
+    logger.info("\n[Phase 5] Running Question-Guided Policy Router MLP...")
     # Calculate 2D activation logits per memory slot: [1, total_slots, 2]
     with torch.no_grad():
-        logits = router(query_emb.to(dtype), chunk_embeddings.to(dtype))
+        logits = router(c_q, m_tilde)
     logger.info(f"-> Generated Policy Logits Shape: {logits.shape}")
     
     # Step E: Gumbel-Softmax Gating (Phase 4 / 6)
@@ -226,7 +239,7 @@ def main():
     with torch.no_grad():
         updated_query_emb, key_padding_mask = multi_hop(
             query_emb.to(device).to(dtype),
-            chunk_embeddings.to(device).to(dtype),
+            contextualized_patches.to(device).to(dtype),
             z.to(device).to(dtype)
         )
     logger.info(f"-> Updated Query Shape: {updated_query_emb.shape} (Reasoning state injected)")
@@ -235,7 +248,7 @@ def main():
     # Step G: Gated Answer Head (Phase 7)
     logger.info("\n[Phase 7] Fusing updated query and memory patches through Gated Answer Head...")
     # Flatten memory slots: [batch_size, total_slots * 256, D]
-    flat_memory = chunk_embeddings.reshape(1, -1, config["model"]["embedding_dim"]).to(device).to(dtype)
+    flat_memory = contextualized_patches.reshape(1, -1, config["model"]["embedding_dim"]).to(device).to(dtype)
     with torch.no_grad():
         pred_logits = answer_head(
             updated_query_emb.to(dtype),
@@ -246,8 +259,20 @@ def main():
     
     # Decode predicted token IDs for logging
     pred_token_ids = torch.argmax(pred_logits, dim=-1) # [1, max_answer_len]
-    decoded_answer = tokenizer.batch_decode(pred_token_ids, skip_special_tokens=True)[0]
-    logger.info(f"-> Decoded Gated VQA Prediction (Untrained): '{decoded_answer}'")
+    
+    # Clean Decoding Logic: truncate sequence at first <eos> or <pad> token
+    eos_id = tokenizer.eos_token_id
+    pad_id = tokenizer.pad_token_id
+    pred_seq_list = pred_token_ids[0].tolist()
+    indices = [idx_t for idx_t, token in enumerate(pred_seq_list) if token in (eos_id, pad_id)]
+    if indices:
+        first_idx = indices[0]
+        truncated_seq = pred_seq_list[:first_idx]
+    else:
+        truncated_seq = pred_seq_list
+        
+    decoded_answer = tokenizer.decode(truncated_seq, skip_special_tokens=True).strip()
+    logger.info(f"-> Decoded Gated VQA Prediction (Untrained) with Clean Decoding: '{decoded_answer}'")
     
     # Step H: Sparsity & Entropy Regularization Loss Calculation (Phase 8)
     logger.info("\n[Phase 8] Computing Sparsity and Entropy Regularization Loss...")
