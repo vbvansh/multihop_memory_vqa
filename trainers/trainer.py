@@ -53,7 +53,7 @@ class ColPaliTrainer:
         model_name = self.config["model"]["name"]
         
         # 4. Handle precomputed embeddings mode vs standard VLM mode
-        self.use_precomputed = self.config["debug"].get("use_precomputed_embeddings", False) and self.config["debug"].get("enable", False)
+        self.use_precomputed = self.config["debug"].get("use_precomputed_embeddings", False)
         
         if self.use_precomputed:
             self.logger.info("Using PRECOMPUTED embeddings mode. Skipping backbone VLM loading to save VRAM and speed up training!")
