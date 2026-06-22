@@ -227,10 +227,9 @@ class ColPaliTrainer:
                 flat_memory = contextualized_patches.reshape(1, -1, self.config["model"]["embedding_dim"])
                 pred_logits = self.answer_head(updated_query, flat_memory, key_padding_mask=key_padding_mask)
                 
-                # 7. Tokenize target labels (appending EOS token to train the boundary)
-                target_text = answer + self.tokenizer.eos_token
+                # 7. Tokenize target labels
                 targets = self.tokenizer(
-                    [target_text],
+                    [answer],
                     padding="max_length",
                     max_length=self.config["decoder"]["max_answer_len"],
                     truncation=True,
@@ -366,10 +365,9 @@ class ColPaliTrainer:
                     flat_memory = contextualized_patches.reshape(1, -1, self.config["model"]["embedding_dim"])
                     pred_logits = self.answer_head(updated_query, flat_memory, key_padding_mask=key_padding_mask)
                     
-                    # Compute VQA & Sparsity Loss for evaluation tracking (appending EOS token)
-                    target_text = answer + self.tokenizer.eos_token
+                    # Compute VQA & Sparsity Loss for evaluation tracking
                     targets = self.tokenizer(
-                        [target_text],
+                        [answer],
                         padding="max_length",
                         max_length=self.config["decoder"]["max_answer_len"],
                         truncation=True,
