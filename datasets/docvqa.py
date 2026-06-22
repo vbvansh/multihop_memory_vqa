@@ -79,7 +79,13 @@ class DocVQADataset(Dataset):
             data_dict = json.load(f)
             
         # Parse data list from root dictionary
-        for item in data_dict.get("data", []):
+        data_items = data_dict.get("data", [])
+        if self.split == "val":
+            max_val = self.config.get("training", {}).get("max_val_samples", None)
+            if max_val is not None:
+                data_items = data_items[:max_val]
+                
+        for item in data_items:
             # Convert list of page ids to image file paths (adding .jpg extension)
             img_paths = [os.path.join(images_dir, f"{p_id}.jpg") for p_id in item["page_ids"]]
             self.samples.append({

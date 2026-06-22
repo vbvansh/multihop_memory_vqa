@@ -293,6 +293,18 @@ class ColPaliTrainer:
             torch.save(checkpoint, best_path)
             self.logger.info(f"Saved new best checkpoint to {best_path} with ANLS: {val_anls:.4f}")
 
+    def load_checkpoint(self, checkpoint_path):
+        """Loads weights from a saved checkpoint into the trainable layers."""
+        if not os.path.exists(checkpoint_path):
+            raise FileNotFoundError(f"Checkpoint not found at: {checkpoint_path}")
+        self.logger.info(f"Loading checkpoint weights from {checkpoint_path}...")
+        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        self.dual_stream.load_state_dict(checkpoint["dual_stream_state"])
+        self.router.load_state_dict(checkpoint["router_state"])
+        self.multi_hop.load_state_dict(checkpoint["multi_hop_state"])
+        self.answer_head.load_state_dict(checkpoint["answer_head_state"])
+        return checkpoint
+
     def evaluate(self, loader):
         """Runs validation and decodes predicted answer tokens back to text strings."""
         self.dual_stream.eval()
@@ -452,8 +464,14 @@ class ColPaliTrainer:
                 f"Best ANLS: {best_anls:.4f}"
             )
             
-        # Post-Training: Run final evaluation on the test split
+        # Post-Training: Load the best checkpoint weights before running final evaluation on the test split
         self.logger.info("Starting final evaluation on test split...")
+        best_path = os.path.join(self.checkpoints_dir, "checkpoint_best.pt")
+        if os.path.exists(best_path):
+            self.load_checkpoint(best_path)
+        else:
+            self.logger.warning("checkpoint_best.pt not found. Evaluating test split on last epoch weights.")
+            
         test_loader = self.get_dataloader(split="test")
         test_loss, test_anls, test_em = self.evaluate(test_loader)
         self.logger.info(

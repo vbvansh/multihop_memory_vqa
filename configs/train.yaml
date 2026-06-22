@@ -9,6 +9,8 @@ training:
   lambda_sparsity: 0.1         # Weight for active memory ratio loss
   lambda_entropy: 0.01         # Weight for policy router confidence loss
   target_sparsity: 0.25        # Target 25% active chunks (1 page out of 4)
+  max_val_samples: 1500        # Slice the 5K validation set to the first 1.5K samples
+
   
 debug:
   enable: false                 # Set true to run local quick validation / overfit test

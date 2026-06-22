@@ -28,6 +28,12 @@ def main():
         choices=["train", "val", "test"], 
         help="Dataset split to evaluate"
     )
+    parser.add_argument(
+        "--checkpoint", 
+        type=str, 
+        default="./checkpoints/checkpoint_best.pt", 
+        help="Path to checkpoint file"
+    )
     args = parser.parse_args()
     
     # Initialize trainer
@@ -35,6 +41,16 @@ def main():
         model_config_path=args.model_config,
         train_config_path=args.train_config
     )
+    
+    # Load checkpoint if exists
+    checkpoint_path = args.checkpoint
+    if checkpoint_path == "./checkpoints/checkpoint_best.pt":
+        checkpoint_path = os.path.join(trainer.checkpoints_dir, "checkpoint_best.pt")
+        
+    if os.path.exists(checkpoint_path):
+        trainer.load_checkpoint(checkpoint_path)
+    else:
+        trainer.logger.warning(f"No checkpoint found at {checkpoint_path}. Evaluating with default/random weights!")
     
     # Load dataloader for specified split
     loader = trainer.get_dataloader(split=args.split)
