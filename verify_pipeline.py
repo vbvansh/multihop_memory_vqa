@@ -276,8 +276,9 @@ def main():
     
     # Step H: Sparsity & Entropy Regularization Loss Calculation (Phase 8)
     logger.info("\n[Phase 8] Computing Sparsity and Entropy Regularization Loss...")
+    target_text = sample["answer"] + tokenizer.eos_token
     targets = tokenizer(
-        [sample["answer"]],
+        [target_text],
         padding="max_length",
         max_length=config["decoder"]["max_answer_len"],
         truncation=True,

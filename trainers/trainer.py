@@ -126,7 +126,7 @@ class ColPaliTrainer:
         self.answer_head = AnswerHead(self.config, vocab_size=vocab_size).to(self.device).to(self.dtype)
         
         # Sparsity & Entropy Regularization Loss
-        self.sparsity_loss_fn = SparsityLoss(self.config, ignore_index=-100)
+        self.sparsity_loss_fn = SparsityLoss(self.config, ignore_index=self.tokenizer.pad_token_id)
         
         # 6. Set up Optimizer
         # Optimize the dual stream processor, dynamic router, multi-hop cell, and answer prediction layers
@@ -227,9 +227,10 @@ class ColPaliTrainer:
                 flat_memory = contextualized_patches.reshape(1, -1, self.config["model"]["embedding_dim"])
                 pred_logits = self.answer_head(updated_query, flat_memory, key_padding_mask=key_padding_mask)
                 
-                # 7. Tokenize target labels
+                # 7. Tokenize target labels (appending EOS token to train the boundary)
+                target_text = answer + self.tokenizer.eos_token
                 targets = self.tokenizer(
-                    [answer],
+                    [target_text],
                     padding="max_length",
                     max_length=self.config["decoder"]["max_answer_len"],
                     truncation=True,
@@ -365,9 +366,10 @@ class ColPaliTrainer:
                     flat_memory = contextualized_patches.reshape(1, -1, self.config["model"]["embedding_dim"])
                     pred_logits = self.answer_head(updated_query, flat_memory, key_padding_mask=key_padding_mask)
                     
-                    # Compute VQA & Sparsity Loss for evaluation tracking
+                    # Compute VQA & Sparsity Loss for evaluation tracking (appending EOS token)
+                    target_text = answer + self.tokenizer.eos_token
                     targets = self.tokenizer(
-                        [answer],
+                        [target_text],
                         padding="max_length",
                         max_length=self.config["decoder"]["max_answer_len"],
                         truncation=True,
