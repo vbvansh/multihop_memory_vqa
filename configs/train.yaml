@@ -13,7 +13,7 @@ training:
 
   
 debug:
-  enable: false                 # Set true to run local quick validation / overfit test
+  enable: false                # Set true to run local quick validation / overfit test
   use_precomputed_embeddings: true # Read precomputed embeddings to bypass backbone
   precomputed_dir: "/c/ujjwalb/Vansh/Datasets/MPDoc_VQA_Dataset/precomputed_embeddings"
   num_samples: 200              # Number of samples to load in debug overfit mode
