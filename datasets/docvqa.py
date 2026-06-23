@@ -84,6 +84,10 @@ class DocVQADataset(Dataset):
             max_val = self.config.get("training", {}).get("max_val_samples", None)
             if max_val is not None:
                 data_items = data_items[:max_val]
+        elif self.split == "train":
+            max_train = self.config.get("training", {}).get("max_train_samples", None)
+            if max_train is not None:
+                data_items = data_items[:max_train]
                 
         for item in data_items:
             # Convert list of page ids to image file paths (adding .jpg extension)

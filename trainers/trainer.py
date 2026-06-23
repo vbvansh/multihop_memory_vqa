@@ -428,10 +428,14 @@ class ColPaliTrainer:
         self.logger.info("Loading dataset loaders...")
         debug_mode = self.config["debug"]["enable"]
         
+        # Load configs for validation and test splits
+        run_val = self.config["training"].get("run_val", True)
+        run_test = self.config["training"].get("run_test", True)
+        
         # Load train and validation splits
         train_loader = self.get_dataloader(split="train")
         train_eval_loader = self.get_dataloader(split="train", shuffle=False) if not debug_mode else train_loader
-        val_loader = self.get_dataloader(split="val") if not debug_mode else train_loader
+        val_loader = self.get_dataloader(split="val") if (run_val and not debug_mode) else None
         
         self.logger.info("Starting training loop...")
         epochs = self.config["training"]["epochs"]
@@ -448,16 +452,18 @@ class ColPaliTrainer:
                 self.logger.info("Evaluating training split performance:")
                 train_loss_eval, train_anls, train_em = self.evaluate(train_eval_loader, name="Train")
                 
-                self.logger.info("Evaluating validation performance:")
-                val_loss, val_anls, val_em = self.evaluate(val_loader, name="Val")
+                if run_val:
+                    self.logger.info("Evaluating validation performance:")
+                    val_loss, val_anls, val_em = self.evaluate(val_loader, name="Val")
                 
-            # Check for best ANLS performance
-            is_best = val_anls > best_anls
+            # Check for best ANLS performance (use train_anls if validation is disabled)
+            eval_metric_for_checkpoint = val_anls if (debug_mode or run_val) else train_anls
+            is_best = eval_metric_for_checkpoint > best_anls
             if is_best:
-                best_anls = val_anls
+                best_anls = eval_metric_for_checkpoint
                 
             # Save checkpoints
-            self.save_checkpoint(epoch + 1, val_anls, best_anls, is_best=is_best)
+            self.save_checkpoint(epoch + 1, eval_metric_for_checkpoint, best_anls, is_best=is_best)
             
             if debug_mode:
                 self.logger.info(
@@ -469,30 +475,41 @@ class ColPaliTrainer:
                     f"Best ANLS: {best_anls:.4f}"
                 )
             else:
-                self.logger.info(
-                    f"[Summary] Epoch {epoch+1}/{epochs} | "
-                    f"Train Loss: {train_loss:.4f} | "
-                    f"Train Eval Loss: {train_loss_eval:.4f} | "
-                    f"Train ANLS: {train_anls:.4f} | "
-                    f"Train EM: {train_em:.4f} | "
-                    f"Val Loss: {val_loss:.4f} | "
-                    f"Val ANLS: {val_anls:.4f} | "
-                    f"Val EM: {val_em:.4f} | "
-                    f"Best ANLS: {best_anls:.4f}"
-                )
+                if run_val:
+                    self.logger.info(
+                        f"[Summary] Epoch {epoch+1}/{epochs} | "
+                        f"Train Loss: {train_loss:.4f} | "
+                        f"Train Eval Loss: {train_loss_eval:.4f} | "
+                        f"Train ANLS: {train_anls:.4f} | "
+                        f"Train EM: {train_em:.4f} | "
+                        f"Val Loss: {val_loss:.4f} | "
+                        f"Val ANLS: {val_anls:.4f} | "
+                        f"Val EM: {val_em:.4f} | "
+                        f"Best ANLS: {best_anls:.4f}"
+                    )
+                else:
+                    self.logger.info(
+                        f"[Summary] Epoch {epoch+1}/{epochs} | "
+                        f"Train Loss: {train_loss:.4f} | "
+                        f"Train Eval Loss: {train_loss_eval:.4f} | "
+                        f"Train ANLS: {train_anls:.4f} | "
+                        f"Train EM: {train_em:.4f} | "
+                        f"Best Train ANLS: {best_anls:.4f}"
+                    )
             
-        # Post-Training: Load the best checkpoint weights before running final evaluation on the test split
-        self.logger.info("Starting final evaluation on test split...")
-        best_path = os.path.join(self.checkpoints_dir, "checkpoint_best.pt")
-        if os.path.exists(best_path):
-            self.load_checkpoint(best_path)
-        else:
-            self.logger.warning("checkpoint_best.pt not found. Evaluating test split on last epoch weights.")
-            
-        test_loader = self.get_dataloader(split="test")
-        test_loss, test_anls, test_em = self.evaluate(test_loader, name="Test")
-        self.logger.info(
-            f"[Final Test Metrics] Test Loss: {test_loss:.4f} | "
-            f"Test ANLS: {test_anls:.4f} | "
-            f"Test EM: {test_em:.4f}"
-        )
+        if run_test:
+            # Post-Training: Load the best checkpoint weights before running final evaluation on the test split
+            self.logger.info("Starting final evaluation on test split...")
+            best_path = os.path.join(self.checkpoints_dir, "checkpoint_best.pt")
+            if os.path.exists(best_path):
+                self.load_checkpoint(best_path)
+            else:
+                self.logger.warning("checkpoint_best.pt not found. Evaluating test split on last epoch weights.")
+                
+            test_loader = self.get_dataloader(split="test")
+            test_loss, test_anls, test_em = self.evaluate(test_loader, name="Test")
+            self.logger.info(
+                f"[Final Test Metrics] Test Loss: {test_loss:.4f} | "
+                f"Test ANLS: {test_anls:.4f} | "
+                f"Test EM: {test_em:.4f}"
+            )
