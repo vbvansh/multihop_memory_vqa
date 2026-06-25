@@ -1,7 +1,7 @@
 training:
   batch_size: 8
   epochs: 200
-  lr: 1e-4
+  lr: 3e-5                     # Reduced learning rate
   weight_decay: 0.01
   grad_clip: 1.0
   seed: 42
@@ -10,12 +10,12 @@ training:
   lambda_entropy: 0.01         # Weight for policy router confidence loss
   target_sparsity: 0.25        # Target 25% active chunks (1 page out of 4)
   max_val_samples: 1500        # Slice the 5K validation set to the first 1.5K samples
-  max_train_samples: 200       # Limit the train split size to 200 samples
-  run_val: false               # Disable validation loading and metric evaluation
-  run_test: false              # Disable final test evaluation
+  warmup_epochs: 5             # Epochs for learning rate linear warmup
+  run_val: true                # Enable validation
+  run_test: true               # Enable final test evaluation
 
 debug:
-  enable: true                 # Set true to run local quick validation / overfit test
+  enable: false                # Set true to run local quick validation / overfit test
   use_precomputed_embeddings: true # Read precomputed embeddings to bypass backbone
   precomputed_dir: "/c/ujjwalb/Vansh/Datasets/MPDoc_VQA_Dataset/precomputed_embeddings"
   num_samples: 200              # Number of samples to load in debug overfit mode

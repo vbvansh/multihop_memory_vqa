@@ -143,6 +143,24 @@ class ColPaliTrainer:
             weight_decay=float(self.config["training"]["weight_decay"])
         )
         
+        # 7. Set up Learning Rate Scheduler (Warmup + Cosine Decay)
+        from torch.optim.lr_scheduler import LinearLR, CosineAnnealingLR, SequentialLR
+        
+        warmup_epochs = self.config["training"].get("warmup_epochs", 5)
+        total_epochs = self.config["training"]["epochs"]
+        
+        # Linear warmup scheduler from 10% of base LR to 100% of base LR
+        scheduler_warmup = LinearLR(self.optimizer, start_factor=0.1, end_factor=1.0, total_iters=warmup_epochs)
+        # Cosine annealing decay scheduler to min_lr of 1e-6
+        scheduler_decay = CosineAnnealingLR(self.optimizer, T_max=total_epochs - warmup_epochs, eta_min=1e-6)
+        
+        # Chained sequential scheduler that transitions from warmup to cosine decay
+        self.scheduler = SequentialLR(
+            self.optimizer,
+            schedulers=[scheduler_warmup, scheduler_decay],
+            milestones=[warmup_epochs]
+        )
+
     def get_dataloader(self, split="train", shuffle=None):
         """Loads either the debug dataset or the real dataset split."""
         debug_mode = self.config["debug"]["enable"]
@@ -443,6 +461,8 @@ class ColPaliTrainer:
         best_anls = -1.0
         
         for epoch in range(epochs):
+            current_lr = self.optimizer.param_groups[0]['lr']
+            self.logger.info(f"Starting Epoch {epoch+1}/{epochs} with Learning Rate: {current_lr:.2e}")
             train_loss = self.train_epoch(train_loader, epoch)
             
             if debug_mode:
@@ -496,6 +516,9 @@ class ColPaliTrainer:
                         f"Train EM: {train_em:.4f} | "
                         f"Best Train ANLS: {best_anls:.4f}"
                     )
+            
+            # Step the learning rate scheduler at the end of each epoch
+            self.scheduler.step()
             
         if run_test:
             # Post-Training: Load the best checkpoint weights before running final evaluation on the test split
