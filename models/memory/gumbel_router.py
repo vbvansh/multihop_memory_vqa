@@ -41,4 +41,15 @@ class GumbelRouter(nn.Module):
         # z contains strict 0.0 or 1.0 floats of shape [batch_size, num_slots]
         z = binary_one_hot[:, :, 1]
         
+        # Anti-exploit check: if all routing decisions are zero, force-activate the slot with the highest logit
+        all_zero = (z.sum(dim=-1) == 0.0)
+        if all_zero.any():
+            activate_logits = logits[:, :, 1] # [batch_size, num_slots]
+            max_indices = torch.argmax(activate_logits, dim=-1) # [batch_size]
+            
+            # Set the gate of the maximum logit slot to 1.0 for all-zero samples
+            # We use index matching to update z without breaking autograd graph
+            for batch_idx in torch.where(all_zero)[0]:
+                z[batch_idx, max_indices[batch_idx]] = 1.0
+                
         return z
