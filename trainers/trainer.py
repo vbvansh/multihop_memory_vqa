@@ -143,23 +143,6 @@ class ColPaliTrainer:
             weight_decay=float(self.config["training"]["weight_decay"])
         )
         
-        # 7. Set up Learning Rate Scheduler (Warmup + Cosine Decay)
-        from torch.optim.lr_scheduler import LinearLR, CosineAnnealingLR, SequentialLR
-        
-        warmup_epochs = self.config["training"].get("warmup_epochs", 5)
-        total_epochs = self.config["training"]["epochs"]
-        
-        # Linear warmup scheduler from 10% of base LR to 100% of base LR
-        scheduler_warmup = LinearLR(self.optimizer, start_factor=0.1, end_factor=1.0, total_iters=warmup_epochs)
-        # Cosine annealing decay scheduler to min_lr of 1e-6
-        scheduler_decay = CosineAnnealingLR(self.optimizer, T_max=total_epochs - warmup_epochs, eta_min=1e-6)
-        
-        # Chained sequential scheduler that transitions from warmup to cosine decay
-        self.scheduler = SequentialLR(
-            self.optimizer,
-            schedulers=[scheduler_warmup, scheduler_decay],
-            milestones=[warmup_epochs]
-        )
 
     def get_dataloader(self, split="train", shuffle=None):
         """Loads either the debug dataset or the real dataset split."""
@@ -272,6 +255,31 @@ class ColPaliTrainer:
                 
                 batch_loss += loss.item()
             
+            # Log detailed activation and gradient diagnostics every 10 steps
+            if step % 10 == 0:
+                with torch.no_grad():
+                    grad_dual = sum(p.grad.data.norm(2).item() ** 2 for p in self.dual_stream.parameters() if p.grad is not None) ** 0.5
+                    grad_router = sum(p.grad.data.norm(2).item() ** 2 for p in self.router.parameters() if p.grad is not None) ** 0.5
+                    grad_mhop = sum(p.grad.data.norm(2).item() ** 2 for p in self.multi_hop.parameters() if p.grad is not None) ** 0.5
+                    grad_head = sum(p.grad.data.norm(2).item() ** 2 for p in self.answer_head.parameters() if p.grad is not None) ** 0.5
+                    
+                    has_nan_dual = torch.isnan(c_q).any().item() or torch.isnan(m_tilde).any().item()
+                    
+                    # Decode the last processed prediction in this batch
+                    pred_ids = torch.argmax(pred_logits, dim=-1) # [1, max_answer_len]
+                    decoded_pred = self.tokenizer.decode(pred_ids[0].tolist(), skip_special_tokens=True).strip()
+                    
+                    self.logger.info(
+                        f"[Step {step}] "
+                        f"c_q norm: {c_q.norm().item():.3f} | m_tilde norm: {m_tilde.norm().item():.3f} | "
+                        f"logits mean/min/max: {router_logits.mean().item():.3f}/{router_logits.min().item():.3f}/{router_logits.max().item():.3f} | "
+                        f"z active: {z.sum().item()}/{z.numel()} ({z.mean().item():.2%}) | "
+                        f"updated_query norm: {updated_query.norm().item():.3f} | "
+                        f"GradNorms [dual/router/mhop/head]: {grad_dual:.2e}/{grad_router:.2e}/{grad_mhop:.2e}/{grad_head:.2e} | "
+                        f"NaNs: {has_nan_dual} | "
+                        f"Pred: '{decoded_pred}' | GT: '{answer}'"
+                    )
+
             # Step parameters after accumulating gradients across the batch
             trainable_params = (
                 list(self.dual_stream.parameters()) + 
@@ -516,9 +524,6 @@ class ColPaliTrainer:
                         f"Train EM: {train_em:.4f} | "
                         f"Best Train ANLS: {best_anls:.4f}"
                     )
-            
-            # Step the learning rate scheduler at the end of each epoch
-            self.scheduler.step()
             
         if run_test:
             # Post-Training: Load the best checkpoint weights before running final evaluation on the test split

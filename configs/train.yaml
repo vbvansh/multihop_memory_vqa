@@ -1,7 +1,7 @@
 training:
   batch_size: 8
   epochs: 200
-  lr: 3e-5                     # Reduced learning rate
+  lr: 1e-4
   weight_decay: 0.01
   grad_clip: 1.0
   seed: 42
@@ -10,9 +10,9 @@ training:
   lambda_entropy: 0.01         # Weight for policy router confidence loss
   target_sparsity: 0.25        # Target 25% active chunks (1 page out of 4)
   max_val_samples: 1500        # Slice the 5K validation set to the first 1.5K samples
-  warmup_epochs: 5             # Epochs for learning rate linear warmup
-  run_val: true                # Enable validation
-  run_test: true               # Enable final test evaluation
+  max_train_samples: 500       # Limit training to the first 500 samples for debug
+  run_val: false                # Disable validation during debugging
+  run_test: false               # Disable final test evaluation during debugging
 
 debug:
   enable: false                # Set true to run local quick validation / overfit test

@@ -29,7 +29,7 @@ class AnswerHead(nn.Module):
         
         # Maps query-attended context to a single pooled representation
         self.pooler = nn.Sequential(
-            nn.Linear(self.embedding_dim * 2, self.projection_dim),
+            nn.Linear(self.embedding_dim, self.projection_dim),
             nn.ReLU(),
             nn.Linear(self.projection_dim, self.projection_dim),
             nn.LayerNorm(self.projection_dim)
@@ -72,11 +72,7 @@ class AnswerHead(nn.Module):
         
         # 2. Global pooling over query tokens to get a single vector per sample
         pooled = torch.mean(fused, dim=1) # [batch_size, D]
-        
-        # Inject original query state explicitly to prevent information washout
-        query_mean = torch.mean(query_embeddings, dim=1) # [batch_size, D]
-        combined = torch.cat([pooled, query_mean], dim=-1) # [batch_size, 2*D]
-        features = self.pooler(combined) # [batch_size, projection_dim]
+        features = self.pooler(pooled) # [batch_size, projection_dim]
         
         # 3. Project to sequence of tokens
         seq_features = self.decoder_projection(features) # [batch_size, max_answer_len * projection_dim]
