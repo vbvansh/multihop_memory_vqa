@@ -20,11 +20,43 @@ class MemoryBank(nn.Module):
         """
         Partitions page-level patch embeddings into chunk-level memory slots across all pages.
         Args:
-            page_embeddings: Tensor of shape [num_pages, num_patches, D]
+            page_embeddings: Tensor of shape [num_pages, num_patches, D] or [batch_size, num_pages, num_patches, D]
         Returns:
             memory_slots: Dict containing consolidated slot embeddings and metadata
         """
-        # Here, the batch dimension of page_embeddings represents the number of pages (num_pages)
+        if page_embeddings.dim() == 4:
+            batch_size, num_pages, num_patches, D = page_embeddings.shape
+            if num_patches >= 1024:
+                core_patches = page_embeddings[:, :, :1024, :]
+            else:
+                core_patches = page_embeddings
+                
+            grid_dim = 32
+            grid_patches = core_patches.view(batch_size, num_pages, grid_dim, grid_dim, self.embedding_dim)
+            chunk_span = grid_dim // self.grid_size
+            
+            slots_embeddings = []
+            for r_idx in range(self.grid_size):
+                for c_idx in range(self.grid_size):
+                    row_start = r_idx * chunk_span
+                    row_end = (r_idx + 1) * chunk_span
+                    col_start = c_idx * chunk_span
+                    col_end = (c_idx + 1) * chunk_span
+                    
+                    chunk = grid_patches[:, :, row_start:row_end, col_start:col_end, :]
+                    chunk_flat = chunk.reshape(batch_size, num_pages, -1, self.embedding_dim)
+                    slots_embeddings.append(chunk_flat)
+                    
+            # Interleave quadrants across pages to form [batch_size, num_pages * 4, 256, D]
+            stacked = torch.stack(slots_embeddings, dim=2) # [B, num_pages, 4, 256, D]
+            stacked_slots = stacked.view(batch_size, num_pages * self.num_slots_per_page, -1, self.embedding_dim)
+            
+            return {
+                "embeddings": stacked_slots,
+                "metadata": []
+            }
+            
+        # 3D Tensor processing (legacy / single sample mode)
         num_pages = page_embeddings.shape[0]
         device = page_embeddings.device
         
@@ -33,14 +65,10 @@ class MemoryBank(nn.Module):
         if num_patches >= 1024:
             core_patches = page_embeddings[:, :1024, :]  # [num_pages, 1024, D]
         else:
-            # Fallback if page has fewer patches
             core_patches = page_embeddings
             
-        # Reshape to 2D grid: [num_pages, 32, 32, D]
         grid_dim = 32
         grid_patches = core_patches.view(num_pages, grid_dim, grid_dim, self.embedding_dim)
-        
-        # We slice the 32x32 grid into a self.grid_size x self.grid_size chunk grid
         chunk_span = grid_dim // self.grid_size
         
         slots_embeddings = []
@@ -49,18 +77,14 @@ class MemoryBank(nn.Module):
         for p_idx in range(num_pages):
             for r_idx in range(self.grid_size):
                 for c_idx in range(self.grid_size):
-                    # Slice patches in this grid quadrant for page p_idx
                     row_start = r_idx * chunk_span
                     row_end = (r_idx + 1) * chunk_span
                     col_start = c_idx * chunk_span
                     col_end = (c_idx + 1) * chunk_span
                     
-                    # Slice visual quadrant: [1, chunk_span, chunk_span, D]
                     chunk_patches = grid_patches[p_idx:p_idx+1, row_start:row_end, col_start:col_end, :]
-                    # Flatten spatial dimensions: [1, 256, D]
                     chunk_patches_flat = chunk_patches.reshape(1, -1, self.embedding_dim)
                     
-                    # Calculate normalized bounding box coordinates for this chunk in [0, 1000] space
                     x1 = int((col_start / grid_dim) * 1000)
                     y1 = int((row_start / grid_dim) * 1000)
                     x2 = int((col_end / grid_dim) * 1000)
@@ -73,8 +97,6 @@ class MemoryBank(nn.Module):
                         "name": f"page_{p_idx}_quadrant_{r_idx}_{c_idx}"
                     })
                     
-        # Stack slots: shape [1, total_slots, num_patches_per_chunk, D]
-        # For N pages in a 2x2 grid: [1, N * 4, 256, 128]
         stacked_slots = torch.stack(slots_embeddings, dim=1).squeeze(0) # [total_slots, 256, D]
         stacked_slots = stacked_slots.unsqueeze(0) # [1, total_slots, 256, D]
         

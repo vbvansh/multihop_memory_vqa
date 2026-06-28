@@ -162,6 +162,60 @@ class ColPaliTrainer:
         )
         return loader
         
+    def prepare_batch_tensors(self, batch):
+        """Prepares batched, dynamically padded vision and question tensors across a batch."""
+        batch_size = len(batch["questions"])
+        precomputed_dir = self.config["debug"]["precomputed_dir"]
+        
+        page_embs_list = []
+        query_embs_list = []
+        page_counts = []
+        
+        for i in range(batch_size):
+            question_id = batch["question_ids"][i]
+            if self.use_precomputed:
+                emb_path = os.path.join(precomputed_dir, f"vision_{question_id}.pt")
+                page_emb = torch.load(emb_path, map_location=self.device).to(self.dtype)
+                q_emb_path = os.path.join(precomputed_dir, f"question_{question_id}.pt")
+                query_emb = torch.load(q_emb_path, map_location=self.device).to(self.dtype)
+            else:
+                images = batch["images"][i]
+                page_embs = []
+                with torch.no_grad():
+                    for img in images:
+                        emb = self.vision_encoder([img])
+                        page_embs.append(emb.cpu())
+                page_emb = torch.cat(page_embs, dim=0).to(self.device).to(self.dtype)
+                question = batch["questions"][i]
+                with torch.no_grad():
+                    query_emb = self.question_encoder([question]).to(self.device).to(self.dtype)
+                    
+            page_embs_list.append(page_emb)
+            if query_emb.dim() == 3:
+                query_emb = query_emb.squeeze(0)
+            query_embs_list.append(query_emb)
+            page_counts.append(page_emb.shape[0])
+            
+        max_pages = max(page_counts)
+        num_patches = page_embs_list[0].shape[1]
+        D = page_embs_list[0].shape[2]
+        
+        padded_page_embs = torch.zeros(batch_size, max_pages, num_patches, D, device=self.device, dtype=self.dtype)
+        slot_padding_mask = torch.ones(batch_size, max_pages * 4, device=self.device, dtype=torch.bool)
+        
+        for i in range(batch_size):
+            p_count = page_counts[i]
+            padded_page_embs[i, :p_count] = page_embs_list[i]
+            slot_padding_mask[i, :p_count * 4] = False
+            
+        q_lengths = [q.shape[0] for q in query_embs_list]
+        max_q_len = max(q_lengths)
+        padded_query_embs = torch.zeros(batch_size, max_q_len, D, device=self.device, dtype=self.dtype)
+        for i in range(batch_size):
+            padded_query_embs[i, :q_lengths[i]] = query_embs_list[i]
+            
+        return padded_page_embs, padded_query_embs, slot_padding_mask
+
     def train_epoch(self, loader, epoch):
         self.dual_stream.train()
         self.router.train()
@@ -173,87 +227,64 @@ class ColPaliTrainer:
         epoch_loss = 0.0
         loop = tqdm(loader, desc=f"Epoch {epoch+1}/{self.config['training']['epochs']}")
         
-        precomputed_dir = self.config["debug"]["precomputed_dir"]
-        
         for step, batch in enumerate(loop):
             self.optimizer.zero_grad()
-            
             batch_size = len(batch["questions"])
-            batch_loss = 0.0
             
-            # Process each document in the batch sequentially to save GPU memory (VRAM preservation)
-            for i in range(batch_size):
-                question_id = batch["question_ids"][i]
-                answer = batch["answers"][i]
-                
-                # 1. Load or encode visual page representations
-                if self.use_precomputed:
-                    # Read precomputed embeddings directly from disk (takes 0 GPU VRAM)
-                    emb_path = os.path.join(precomputed_dir, f"vision_{question_id}.pt")
-                    page_emb = torch.load(emb_path, map_location=self.device).to(self.dtype)
-                else:
-                    # Encode page images sequentially to stay under the 4GB VRAM limit
-                    images = batch["images"][i]
-                    page_embs = []
-                    with torch.no_grad():
-                        for img in images:
-                            emb = self.vision_encoder([img])  # [1, num_patches, D]
-                            page_embs.append(emb.cpu())
-                    page_emb = torch.cat(page_embs, dim=0).to(self.device).to(self.dtype)
-                
-                # 2. Partition into visual memory slots
-                memory_outputs = self.memory_bank(page_emb)
-                chunk_embeddings = memory_outputs["embeddings"].to(self.device).to(self.dtype)
-                
-                # 3. Load or encode question text
-                if self.use_precomputed:
-                    q_emb_path = os.path.join(precomputed_dir, f"question_{question_id}.pt")
-                    query_emb = torch.load(q_emb_path, map_location=self.device).to(self.dtype)
-                else:
-                    question = batch["questions"][i]
-                    with torch.no_grad():
-                        query_emb = self.question_encoder([question]).to(self.device).to(self.dtype)
-                    
-                # 4. Run decoupled dual-stream processing
-                c_q, m_tilde, contextualized_patches = self.dual_stream(query_emb, chunk_embeddings)
-                
-                # 5. Run dynamic routing & gating
-                router_logits = self.router(c_q, m_tilde)
-                z = self.gumbel(router_logits, hard=True)
-                
-                # 6. Multi-Hop Reasoning over contextualized patches
-                updated_query, key_padding_mask = self.multi_hop(query_emb, contextualized_patches, z)
-                
-                # 7. Gated Answer prediction
-                flat_memory = contextualized_patches.reshape(1, -1, self.config["model"]["embedding_dim"])
-                pred_logits = self.answer_head(updated_query, flat_memory, key_padding_mask=key_padding_mask)
-                
-                # 7. Tokenize target labels
-                targets = self.tokenizer(
-                    [answer],
-                    padding="max_length",
-                    max_length=self.config["decoder"]["max_answer_len"],
-                    truncation=True,
-                    return_tensors="pt"
-                )["input_ids"].to(self.device)
-                
-                # Reshape for loss computation
-                flat_logits = pred_logits.view(-1, pred_logits.size(-1))
-                flat_targets = targets.view(-1)
-                
-                # 8. Compute composite loss (vqa + sparsity + entropy)
-                loss, loss_details = self.sparsity_loss_fn(
-                    flat_logits,
-                    flat_targets,
-                    router_logits,
-                    z
-                )
-                
-                # Scale loss by batch_size for correct gradient accumulation
-                loss_scaled = loss / batch_size
-                loss_scaled.backward()
-                
-                batch_loss += loss.item()
+            # Prepare batched tensors with dynamic padding
+            padded_page_embs, padded_query_embs, slot_padding_mask = self.prepare_batch_tensors(batch)
+            
+            # Partition into visual memory slots
+            memory_outputs = self.memory_bank(padded_page_embs)
+            chunk_embeddings = memory_outputs["embeddings"].to(self.device).to(self.dtype)
+            
+            # Decoupled dual-stream processing
+            c_q, m_tilde, contextualized_patches = self.dual_stream(padded_query_embs, chunk_embeddings)
+            
+            # Dynamic routing & gating
+            router_logits = self.router(c_q, m_tilde)
+            z = self.gumbel(router_logits, hard=True, slot_padding_mask=slot_padding_mask)
+            
+            # Multi-Hop Reasoning over contextualized patches
+            updated_query, key_padding_mask = self.multi_hop(padded_query_embs, contextualized_patches, z, slot_padding_mask=slot_padding_mask)
+            
+            # Gated Answer prediction
+            flat_memory = contextualized_patches.reshape(batch_size, -1, self.config["model"]["embedding_dim"])
+            pred_logits = self.answer_head(updated_query, flat_memory, key_padding_mask=key_padding_mask)
+            
+            # Tokenize target labels in parallel
+            targets = self.tokenizer(
+                batch["answers"],
+                padding="max_length",
+                max_length=self.config["decoder"]["max_answer_len"],
+                truncation=True,
+                return_tensors="pt"
+            )["input_ids"].to(self.device)
+            
+            flat_logits = pred_logits.view(-1, pred_logits.size(-1))
+            flat_targets = targets.view(-1)
+            
+            loss, loss_details = self.sparsity_loss_fn(
+                flat_logits,
+                flat_targets,
+                router_logits,
+                z
+            )
+            
+            loss.backward()
+            
+            # Step parameters
+            trainable_params = (
+                list(self.dual_stream.parameters()) + 
+                list(self.router.parameters()) + 
+                list(self.multi_hop.parameters()) + 
+                list(self.answer_head.parameters())
+            )
+            torch.nn.utils.clip_grad_norm_(trainable_params, self.config["training"]["grad_clip"])
+            self.optimizer.step()
+            
+            epoch_loss += loss.item()
+            loop.set_postfix(loss=loss.item())
             
             # Log detailed activation and gradient diagnostics every 10 steps
             if step % 10 == 0:
@@ -265,8 +296,7 @@ class ColPaliTrainer:
                     
                     has_nan_dual = torch.isnan(c_q).any().item() or torch.isnan(m_tilde).any().item()
                     
-                    # Decode the last processed prediction in this batch
-                    pred_ids = torch.argmax(pred_logits, dim=-1) # [1, max_answer_len]
+                    pred_ids = torch.argmax(pred_logits, dim=-1)
                     decoded_pred = self.tokenizer.decode(pred_ids[0].tolist(), skip_special_tokens=True).strip()
                     
                     self.logger.info(
@@ -277,21 +307,8 @@ class ColPaliTrainer:
                         f"updated_query norm: {updated_query.norm().item():.3f} | "
                         f"GradNorms [dual/router/mhop/head]: {grad_dual:.2e}/{grad_router:.2e}/{grad_mhop:.2e}/{grad_head:.2e} | "
                         f"NaNs: {has_nan_dual} | "
-                        f"Pred: '{decoded_pred}' | GT: '{answer}'"
+                        f"Pred: '{decoded_pred}' | GT: '{batch['answers'][0]}'"
                     )
-
-            # Step parameters after accumulating gradients across the batch
-            trainable_params = (
-                list(self.dual_stream.parameters()) + 
-                list(self.router.parameters()) + 
-                list(self.multi_hop.parameters()) + 
-                list(self.answer_head.parameters())
-            )
-            torch.nn.utils.clip_grad_norm_(trainable_params, self.config["training"]["grad_clip"])
-            self.optimizer.step()
-            
-            epoch_loss += batch_loss / batch_size
-            loop.set_postfix(loss=batch_loss / batch_size)
             
         avg_loss = epoch_loss / len(loader)
         self.logger.info(f"Epoch {epoch+1} Complete. Average Training Loss: {avg_loss:.4f}")
@@ -343,97 +360,61 @@ class ColPaliTrainer:
         total_eval_loss = 0.0
         sample_count = 0
         
-        precomputed_dir = self.config["debug"]["precomputed_dir"]
-        
         with torch.no_grad():
             for batch in loader:
                 batch_size = len(batch["questions"])
+                sample_count += batch_size
+                
+                padded_page_embs, padded_query_embs, slot_padding_mask = self.prepare_batch_tensors(batch)
+                
+                memory_outputs = self.memory_bank(padded_page_embs)
+                chunk_embeddings = memory_outputs["embeddings"].to(self.device).to(self.dtype)
+                
+                c_q, m_tilde, contextualized_patches = self.dual_stream(padded_query_embs, chunk_embeddings)
+                router_logits = self.router(c_q, m_tilde)
+                z = self.gumbel(router_logits, hard=True, slot_padding_mask=slot_padding_mask)
+                
+                updated_query, key_padding_mask = self.multi_hop(padded_query_embs, contextualized_patches, z, slot_padding_mask=slot_padding_mask)
+                flat_memory = contextualized_patches.reshape(batch_size, -1, self.config["model"]["embedding_dim"])
+                pred_logits = self.answer_head(updated_query, flat_memory, key_padding_mask=key_padding_mask)
+                
+                targets = self.tokenizer(
+                    batch["answers"],
+                    padding="max_length",
+                    max_length=self.config["decoder"]["max_answer_len"],
+                    truncation=True,
+                    return_tensors="pt"
+                )["input_ids"].to(self.device)
+                
+                flat_logits = pred_logits.view(-1, pred_logits.size(-1))
+                flat_targets = targets.view(-1)
+                
+                loss, _ = self.sparsity_loss_fn(
+                    flat_logits,
+                    flat_targets,
+                    router_logits,
+                    z
+                )
+                total_eval_loss += loss.item() * batch_size
+                
+                pred_ids = torch.argmax(pred_logits, dim=-1)
+                
+                eos_id = tokenizer_eos_id = self.tokenizer.eos_token_id
+                pad_id = self.tokenizer.pad_token_id
+                
                 for i in range(batch_size):
-                    question_id = batch["question_ids"][i]
-                    answer = batch["answers"][i]
-                    sample_count += 1
-                    
-                    # 1. Load or encode visual page representations
-                    if self.use_precomputed:
-                        emb_path = os.path.join(precomputed_dir, f"vision_{question_id}.pt")
-                        page_emb = torch.load(emb_path, map_location=self.device).to(self.dtype)
+                    seq_list = pred_ids[i].tolist()
+                    indices = [idx_t for idx_t, token in enumerate(seq_list) if token in (eos_id, pad_id)]
+                    if indices:
+                        first_idx = indices[0]
+                        truncated_seq = seq_list[:first_idx]
                     else:
-                        images = batch["images"][i]
-                        page_embs = []
-                        for img in images:
-                            emb = self.vision_encoder([img])
-                            page_embs.append(emb.cpu())
-                        page_emb = torch.cat(page_embs, dim=0).to(self.device).to(self.dtype)
+                        truncated_seq = seq_list
                     
-                    # Memory bank
-                    memory_outputs = self.memory_bank(page_emb)
-                    chunk_embeddings = memory_outputs["embeddings"].to(self.device).to(self.dtype)
+                    decoded_str = self.tokenizer.decode(truncated_seq, skip_special_tokens=True).strip()
+                    predictions.append(decoded_str)
+                    ground_truths.append([batch["answers"][i]])
                     
-                    # Question
-                    if self.use_precomputed:
-                        q_emb_path = os.path.join(precomputed_dir, f"question_{question_id}.pt")
-                        query_emb = torch.load(q_emb_path, map_location=self.device).to(self.dtype)
-                    else:
-                        question = batch["questions"][i]
-                        query_emb = self.question_encoder([question]).to(self.device).to(self.dtype)
-                    
-                    # Dual-Stream
-                    c_q, m_tilde, contextualized_patches = self.dual_stream(query_emb, chunk_embeddings)
-                    
-                    # Routing
-                    router_logits = self.router(c_q, m_tilde)
-                    z = self.gumbel(router_logits, hard=True)
-                    
-                    # Multi-Hop
-                    updated_query, key_padding_mask = self.multi_hop(query_emb, contextualized_patches, z)
-                    
-                    # Gated Answer Head
-                    flat_memory = contextualized_patches.reshape(1, -1, self.config["model"]["embedding_dim"])
-                    pred_logits = self.answer_head(updated_query, flat_memory, key_padding_mask=key_padding_mask)
-                    
-                    # Compute VQA & Sparsity Loss for evaluation tracking
-                    targets = self.tokenizer(
-                        [answer],
-                        padding="max_length",
-                        max_length=self.config["decoder"]["max_answer_len"],
-                        truncation=True,
-                        return_tensors="pt"
-                    )["input_ids"].to(self.device)
-                    
-                    flat_logits = pred_logits.view(-1, pred_logits.size(-1))
-                    flat_targets = targets.view(-1)
-                    
-                    loss, _ = self.sparsity_loss_fn(
-                        flat_logits,
-                        flat_targets,
-                        router_logits,
-                        z
-                    )
-                    total_eval_loss += loss.item()
-                    
-                    pred_ids = torch.argmax(pred_logits, dim=-1) # [1, max_answer_len]
-                    
-                    # Clean Decoding Logic: truncate sequence at first <eos> or <pad> token
-                    eos_id = self.tokenizer.eos_token_id
-                    pad_id = self.tokenizer.pad_token_id
-                    
-                    decoded_preds = []
-                    for seq in pred_ids:
-                        seq_list = seq.tolist()
-                        indices = [idx_t for idx_t, token in enumerate(seq_list) if token in (eos_id, pad_id)]
-                        if indices:
-                            first_idx = indices[0]
-                            truncated_seq = seq_list[:first_idx]
-                        else:
-                            truncated_seq = seq_list
-                        
-                        decoded_str = self.tokenizer.decode(truncated_seq, skip_special_tokens=True)
-                        decoded_preds.append(decoded_str.strip())
-                    
-                    predictions.extend(decoded_preds)
-                    ground_truths.append([answer])
-                    
-        # Calculate metrics
         total_anls = 0.0
         total_em = 0.0
         

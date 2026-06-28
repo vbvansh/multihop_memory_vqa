@@ -24,12 +24,13 @@ class MultiHopReasoning(nn.Module):
         # Recurrent state update cell
         self.gru_cell = nn.GRUCell(self.embedding_dim, self.embedding_dim)
         
-    def forward(self, query_embeddings, memory_slots, gates):
+    def forward(self, query_embeddings, memory_slots, gates, slot_padding_mask=None):
         """
         Args:
             query_embeddings: [batch_size, num_query_tokens, D]
             memory_slots: [batch_size, total_slots, num_patches_per_slot, D] (usually [B, S, 256, D])
             gates: [batch_size, total_slots] (binary gates 0.0 or 1.0)
+            slot_padding_mask: Optional boolean tensor of shape [batch_size, total_slots]
         Returns:
             updated_query: [batch_size, num_query_tokens, D]
             key_padding_mask: [batch_size, total_slots * num_patches_per_slot]
@@ -50,9 +51,13 @@ class MultiHopReasoning(nn.Module):
         key_padding_mask = (gates_expanded == 0.0)
         
         # Fallback to prevent all-masked division by zero NaNs:
-        # If all slots are masked out (e.g. gates are all 0), unmask everything
         all_masked = key_padding_mask.all(dim=-1, keepdim=True)
-        key_padding_mask = torch.where(all_masked, torch.zeros_like(key_padding_mask, dtype=torch.bool), key_padding_mask)
+        if all_masked.any():
+            if slot_padding_mask is not None:
+                slot_mask_expanded = slot_padding_mask.unsqueeze(-1).expand(-1, -1, num_patches).reshape(batch_size, -1)
+                key_padding_mask = torch.where(all_masked, slot_mask_expanded, key_padding_mask)
+            else:
+                key_padding_mask = torch.where(all_masked, torch.zeros_like(key_padding_mask, dtype=torch.bool), key_padding_mask)
         
         # 3. Initialize reasoning state by mean pooling query tokens: [batch_size, D]
         h_t = torch.mean(query_embeddings, dim=1)
