@@ -276,7 +276,29 @@ class ColPaliTrainer:
                 z
             )
             
+            if epoch == 0 and step == 0:
+                self.logger.info("--- QUESTION 3: Differential LR Check ---")
+                for i, group in enumerate(self.optimizer.param_groups):
+                    self.logger.info(f"Group {i}: lr={group['lr']:.2e}, num_params={len(group['params'])}")
+                    
+                self.logger.info("--- QUESTION 5 & QUESTION 2: Loss Input Shapes & Target Samples ---")
+                self.logger.info(f"Question 5 - logits.shape: {flat_logits.shape}, targets.shape: {flat_targets.shape}")
+                self.logger.info(f"Question 2 - flat_logits sample (first 2 tokens, first 5 logits):\n{flat_logits[:2, :5].tolist()}")
+                self.logger.info(f"Question 2 - flat_targets sample (first 10 target token IDs):\n{flat_targets[:10].tolist()}")
+                
+                self.logger.info("--- QUESTION 4: Backward Call Check ---")
+                print("backward called")
+                self.logger.info("backward called")
+            
             loss.backward()
+            
+            if epoch == 0 and step == 0:
+                self.logger.info("--- QUESTION 1: AnswerHead Parameter Gradients ---")
+                for name, param in self.answer_head.named_parameters():
+                    if param.grad is not None:
+                        self.logger.info(f"[Grad Check] {name}: grad mean abs = {param.grad.abs().mean().item():.6e}")
+                    else:
+                        self.logger.info(f"[Grad Check] {name}: NO GRADIENT")
             
             # Step parameters
             trainable_params = (
