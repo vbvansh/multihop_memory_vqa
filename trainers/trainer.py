@@ -129,7 +129,7 @@ class ColPaliTrainer:
         # Sparsity & Entropy Regularization Loss
         self.sparsity_loss_fn = SparsityLoss(self.config, ignore_index=self.tokenizer.pad_token_id)
         
-        # 6. Set up Optimizer with Differential Learning Rates
+        # 6. Set up Optimizer (All parameter groups at base_lr = 1e-4)
         base_lr = float(self.config["training"]["lr"])
         weight_decay = float(self.config["training"]["weight_decay"])
         
@@ -141,7 +141,7 @@ class ColPaliTrainer:
             },
             {
                 "params": list(self.answer_head.parameters()),
-                "lr": 1e-6,
+                "lr": base_lr,
                 "weight_decay": weight_decay
             }
         ]
@@ -230,6 +230,10 @@ class ColPaliTrainer:
             self.shared_model.eval()
         
         epoch_loss = 0.0
+        epoch_vqa_loss = 0.0
+        epoch_sp_loss = 0.0
+        epoch_ent_loss = 0.0
+        epoch_active_ratio = 0.0
         loop = tqdm(loader, desc=f"Epoch {epoch+1}/{self.config['training']['epochs']}")
         
         for step, batch in enumerate(loop):
@@ -313,7 +317,18 @@ class ColPaliTrainer:
                 self.scheduler.step()
             
             epoch_loss += loss.item()
-            loop.set_postfix(loss=loss.item())
+            epoch_vqa_loss += loss_details["loss_vqa"]
+            epoch_sp_loss += loss_details["loss_sparsity"]
+            epoch_ent_loss += loss_details["loss_entropy"]
+            epoch_active_ratio += loss_details["active_ratio"]
+            
+            loop.set_postfix(
+                loss=loss.item(),
+                vqa=loss_details["loss_vqa"],
+                sp=loss_details["loss_sparsity"],
+                ent=loss_details["loss_entropy"],
+                act=f"{loss_details['active_ratio']:.2%}"
+            )
             
             # Log detailed activation and gradient diagnostics every 10 steps
             if step % 10 == 0:
@@ -339,8 +354,18 @@ class ColPaliTrainer:
                         f"Pred: '{decoded_pred}' | GT: '{batch['answers'][0]}'"
                     )
             
-        avg_loss = epoch_loss / len(loader)
-        self.logger.info(f"Epoch {epoch+1} Complete. Average Training Loss: {avg_loss:.4f}")
+        num_batches = len(loader)
+        avg_loss = epoch_loss / num_batches
+        avg_vqa = epoch_vqa_loss / num_batches
+        avg_sp = epoch_sp_loss / num_batches
+        avg_ent = epoch_ent_loss / num_batches
+        avg_active = epoch_active_ratio / num_batches
+        
+        self.logger.info(
+            f"Epoch {epoch+1} Complete. Loss Breakdown -> "
+            f"loss_total: {avg_loss:.4f} | loss_vqa: {avg_vqa:.4f} | "
+            f"loss_sparsity: {avg_sp:.4f} | loss_entropy: {avg_ent:.4f} | active_ratio: {avg_active:.4f} ({avg_active:.2%})"
+        )
         return avg_loss
         
     def save_checkpoint(self, epoch, val_anls, best_anls, is_best=False):

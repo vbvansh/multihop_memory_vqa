@@ -31,8 +31,15 @@ class SparsityLoss(nn.Module):
             total_loss: Scalar float tensor representing combined loss
             loss_dict: Dict containing individual loss values for logging
         """
-        # 1. Answer Generation Loss (VQA Loss)
-        loss_vqa = self.vqa_loss_fn(logits, targets)
+        # 1. Answer Generation Loss (VQA Loss) with explicit padding mask filtering
+        if self.ignore_index is not None:
+            loss_mask = (targets != self.ignore_index)
+            if loss_mask.any():
+                loss_vqa = F.cross_entropy(logits[loss_mask], targets[loss_mask], label_smoothing=0.1)
+            else:
+                loss_vqa = F.cross_entropy(logits, targets, ignore_index=self.ignore_index, label_smoothing=0.1)
+        else:
+            loss_vqa = F.cross_entropy(logits, targets, label_smoothing=0.1)
         
         # 2. Sparsity Constraint Loss (L2 distance to target active ratio)
         # gates has values 0.0 or 1.0. Mean along slots gives the activation ratio per sample.
