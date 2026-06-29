@@ -43,6 +43,8 @@ class AnswerHead(nn.Module):
             nn.Linear(self.projection_dim, self.max_answer_len * self.projection_dim)
         )
         
+        self.dropout = nn.Dropout(p=0.3)
+        
         # Final output projection to vocabulary logits
         self.vocab_projection = nn.Linear(self.projection_dim, vocab_size)
         
@@ -77,6 +79,9 @@ class AnswerHead(nn.Module):
         # 3. Project to sequence of tokens
         seq_features = self.decoder_projection(features) # [batch_size, max_answer_len * projection_dim]
         seq_features = seq_features.view(batch_size, self.max_answer_len, self.projection_dim)
+        
+        # Apply dropout to hidden states before final vocabulary projection
+        seq_features = self.dropout(seq_features)
         
         # Map to vocabulary logits
         logits = self.vocab_projection(seq_features) # [batch_size, max_answer_len, vocab_size]

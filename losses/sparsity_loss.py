@@ -18,7 +18,7 @@ class SparsityLoss(nn.Module):
         self.lambda_entropy = config["training"].get("lambda_entropy", 0.01)
         self.target_sparsity = config["training"].get("target_sparsity", 0.25)
         
-        self.vqa_loss_fn = nn.CrossEntropyLoss(ignore_index=self.ignore_index)
+        self.vqa_loss_fn = nn.CrossEntropyLoss(ignore_index=self.ignore_index, label_smoothing=0.1)
         
     def forward(self, logits, targets, router_logits, gates):
         """

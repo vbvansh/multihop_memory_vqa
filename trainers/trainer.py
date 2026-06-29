@@ -6,6 +6,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 import yaml
 
+from transformers import get_linear_schedule_with_warmup
 from models.encoders.vision_encoder import ColPaliVisionEncoder
 from models.encoders.question_encoder import ColPaliQuestionEncoder
 from models.memory.memory_bank import MemoryBank
@@ -128,20 +129,24 @@ class ColPaliTrainer:
         # Sparsity & Entropy Regularization Loss
         self.sparsity_loss_fn = SparsityLoss(self.config, ignore_index=self.tokenizer.pad_token_id)
         
-        # 6. Set up Optimizer
-        # Optimize the dual stream processor, dynamic router, multi-hop cell, and answer prediction layers
-        trainable_params = (
-            list(self.dual_stream.parameters()) +
-            list(self.router.parameters()) +
-            list(self.multi_hop.parameters()) +
-            list(self.answer_head.parameters())
-        )
+        # 6. Set up Optimizer with Differential Learning Rates
+        base_lr = float(self.config["training"]["lr"])
+        weight_decay = float(self.config["training"]["weight_decay"])
         
-        self.optimizer = optim.AdamW(
-            trainable_params,
-            lr=float(self.config["training"]["lr"]),
-            weight_decay=float(self.config["training"]["weight_decay"])
-        )
+        optimizer_grouped_parameters = [
+            {
+                "params": list(self.dual_stream.parameters()) + list(self.router.parameters()) + list(self.multi_hop.parameters()),
+                "lr": base_lr,
+                "weight_decay": weight_decay
+            },
+            {
+                "params": list(self.answer_head.parameters()),
+                "lr": 1e-6,
+                "weight_decay": weight_decay
+            }
+        ]
+        
+        self.optimizer = optim.AdamW(optimizer_grouped_parameters)
         
 
     def get_dataloader(self, split="train", shuffle=None):
@@ -282,6 +287,8 @@ class ColPaliTrainer:
             )
             torch.nn.utils.clip_grad_norm_(trainable_params, self.config["training"]["grad_clip"])
             self.optimizer.step()
+            if hasattr(self, "scheduler") and self.scheduler is not None:
+                self.scheduler.step()
             
             epoch_loss += loss.item()
             loop.set_postfix(loss=loss.item())
@@ -446,6 +453,14 @@ class ColPaliTrainer:
         
         self.logger.info("Starting training loop...")
         epochs = self.config["training"]["epochs"]
+        
+        total_batches = len(train_loader)
+        num_training_steps = epochs * total_batches
+        self.scheduler = get_linear_schedule_with_warmup(
+            self.optimizer,
+            num_warmup_steps=50,
+            num_training_steps=num_training_steps
+        )
         
         best_anls = -1.0
         

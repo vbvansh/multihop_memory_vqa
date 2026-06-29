@@ -15,6 +15,7 @@ class MemoryBank(nn.Module):
         # Grid parameters: divide each page image into a GxG grid of chunks
         self.grid_size = 2  # 2x2 quadrants
         self.num_slots_per_page = self.grid_size * self.grid_size
+        self.dropout = nn.Dropout(p=0.2)
         
     def forward(self, page_embeddings):
         """
@@ -50,6 +51,7 @@ class MemoryBank(nn.Module):
             # Interleave quadrants across pages to form [batch_size, num_pages * 4, 256, D]
             stacked = torch.stack(slots_embeddings, dim=2) # [B, num_pages, 4, 256, D]
             stacked_slots = stacked.view(batch_size, num_pages * self.num_slots_per_page, -1, self.embedding_dim)
+            stacked_slots = self.dropout(stacked_slots)
             
             return {
                 "embeddings": stacked_slots,
@@ -99,6 +101,7 @@ class MemoryBank(nn.Module):
                     
         stacked_slots = torch.stack(slots_embeddings, dim=1).squeeze(0) # [total_slots, 256, D]
         stacked_slots = stacked_slots.unsqueeze(0) # [1, total_slots, 256, D]
+        stacked_slots = self.dropout(stacked_slots)
         
         return {
             "embeddings": stacked_slots, # [1, total_slots, 256, D]

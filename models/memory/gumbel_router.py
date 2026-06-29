@@ -11,6 +11,7 @@ class GumbelRouter(nn.Module):
     def __init__(self, temperature=1.0):
         super().__init__()
         self.temperature = temperature  # \tau parameter to control discreteness
+        self.dropout = nn.Dropout(p=0.2)
         
     def set_temperature(self, temperature):
         """Sets the temperature value dynamically (used for annealing during training)."""
@@ -29,6 +30,9 @@ class GumbelRouter(nn.Module):
         Returns:
             z: Binary gate tensor of shape [batch_size, num_slots]
         """
+        # Apply dropout to unnormalized router logits before Gumbel sampling
+        logits = self.dropout(logits)
+        
         # gumbel_softmax handles:
         # 1. Adding Gumbel noise.
         # 2. Argmax in forward pass (if hard=True) -> outputting strict [0, 1] or [1, 0].
