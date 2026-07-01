@@ -6,7 +6,7 @@ training:
   grad_clip: 1.0
   seed: 42
   num_hops: 3                  # Number of reasoning attention hops
-  lambda_sparsity: 0.1         # Weight for active memory ratio loss
+  lambda_sparsity: 0.3         # Weight for active memory ratio loss
   lambda_entropy: 0.01         # Weight for policy router confidence loss
   target_sparsity: 0.25        # Target 25% active chunks (1 page out of 4)
   max_val_samples: 1000        # Slice the 5K validation set to the first 1K samples

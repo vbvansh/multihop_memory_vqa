@@ -47,6 +47,7 @@ class AnswerHead(nn.Module):
         
         # Final output projection to vocabulary logits
         self.vocab_projection = nn.Linear(self.projection_dim, vocab_size)
+        nn.init.zeros_(self.vocab_projection.bias)
         
     def forward(self, query_embeddings, doc_embeddings, key_padding_mask=None):
         """
@@ -72,16 +73,22 @@ class AnswerHead(nn.Module):
         # Residual connection and normalization
         fused = self.layer_norm(attn_output + query_embeddings) # [batch_size, num_query_tokens, D]
         
-        # 2. Global pooling over query tokens to get a single vector per sample
-        pooled = torch.mean(fused, dim=1) # [batch_size, D]
-        features = self.pooler(pooled) # [batch_size, projection_dim]
+        # 2. Project each token position independently
+        features = self.pooler(fused) # [batch_size, num_query_tokens, projection_dim]
         
-        # 3. Project to sequence of tokens
-        seq_features = self.decoder_projection(features) # [batch_size, max_answer_len * projection_dim]
-        seq_features = seq_features.view(batch_size, self.max_answer_len, self.projection_dim)
-        
+        # 3. Slice or pad to self.max_answer_len positions
+        if features.shape[1] > self.max_answer_len:
+            seq_features = features[:, :self.max_answer_len, :]
+        elif features.shape[1] < self.max_answer_len:
+            pad_len = self.max_answer_len - features.shape[1]
+            seq_features = F.pad(features, (0, 0, 0, pad_len))
+        else:
+            seq_features = features
+            
         # Apply dropout to hidden states before final vocabulary projection
         seq_features = self.dropout(seq_features)
+        
+        print(f"seq_features shape: {seq_features.shape}")
         
         # Map to vocabulary logits
         logits = self.vocab_projection(seq_features) # [batch_size, max_answer_len, vocab_size]

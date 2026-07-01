@@ -568,6 +568,12 @@ class ColPaliTrainer:
                         f"Best Train ANLS: {best_anls:.4f}"
                     )
             
+            # Gumbel temperature annealing (decay 10% per epoch, floor at 0.1)
+            new_temp = max(0.1, self.gumbel.temperature * 0.9)
+            self.gumbel.set_temperature(new_temp)
+            self.logger.info(f"Annealed Gumbel router temperature to: {new_temp:.4f}")
+            
+            
         if run_test:
             # Post-Training: Load the best checkpoint weights before running final evaluation on the test split
             self.logger.info("Starting final evaluation on test split...")
