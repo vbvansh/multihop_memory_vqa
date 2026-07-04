@@ -30,7 +30,7 @@ class AnswerHead(nn.Module):
         # Maps query-attended context to a single pooled representation
         self.pooler = nn.Sequential(
             nn.Linear(self.embedding_dim, self.projection_dim),
-            nn.ReLU(),
+            nn.GELU(),
             nn.Linear(self.projection_dim, self.projection_dim),
             nn.LayerNorm(self.projection_dim)
         )
@@ -44,6 +44,14 @@ class AnswerHead(nn.Module):
         )
         
         self.dropout = nn.Dropout(p=0.3)
+        
+        self.pad_embedding = nn.Parameter(
+            torch.randn(1, 1, self.projection_dim) * 0.02
+        )
+        
+        self.pos_embedding = nn.Embedding(
+            self.max_answer_len, self.projection_dim
+        )
         
         # Final output projection to vocabulary logits
         self.vocab_projection = nn.Linear(self.projection_dim, vocab_size)
@@ -81,14 +89,25 @@ class AnswerHead(nn.Module):
             seq_features = features[:, :self.max_answer_len, :]
         elif features.shape[1] < self.max_answer_len:
             pad_len = self.max_answer_len - features.shape[1]
-            seq_features = F.pad(features, (0, 0, 0, pad_len))
+            pad = self.pad_embedding.expand(
+                features.shape[0], pad_len, -1
+            )
+            seq_features = torch.cat([features, pad], dim=1)
         else:
             seq_features = features
+            
+        # Add positional embeddings to seq_features
+        positions = torch.arange(
+            self.max_answer_len, device=seq_features.device
+        )
+        seq_features = seq_features + self.pos_embedding(positions)
             
         # Apply dropout to hidden states before final vocabulary projection
         seq_features = self.dropout(seq_features)
         
         print(f"seq_features shape: {seq_features.shape}")
+        print(f"seq_features mean: {seq_features.mean():.4f}")
+        print(f"seq_features std:  {seq_features.std():.4f}")
         
         # Map to vocabulary logits
         logits = self.vocab_projection(seq_features) # [batch_size, max_answer_len, vocab_size]
