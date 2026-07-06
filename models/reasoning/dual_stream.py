@@ -41,12 +41,14 @@ class DualStreamProcessor(nn.Module):
             num_layers=self.num_layers
         )
         
-    def forward(self, query_embeddings, slot_embeddings):
+    def forward(self, query_embeddings, slot_embeddings, slot_padding_mask=None):
         """
         Fuses and contextualizes the streams separately.
         Args:
             query_embeddings: [batch_size, num_query_tokens, D]
             slot_embeddings: [batch_size, num_slots, num_patches_per_chunk, D]
+            slot_padding_mask: [batch_size, num_slots] bool, True = padded dummy slot.
+                               Applied so padded zero-slots don't leak into c_q / m_tilde.
         Returns:
             c_q: [batch_size, D] pooled query context vector
             contextualized_slots: [batch_size, num_slots, D] slot-level representations for routing
@@ -54,17 +56,20 @@ class DualStreamProcessor(nn.Module):
         """
         batch_size = query_embeddings.shape[0]
         num_slots = slot_embeddings.shape[1]
-        
+
         # --- Stream B: Document Memory Reasoning Stream (Independent of Question) ---
         # 1. Pool slot embeddings over patches: [batch_size, num_slots, D]
         slot_pooled = torch.mean(slot_embeddings, dim=2)
-        
+
         # 2. Run transformer encoder over the slot sequence to perform intra-memory reasoning
-        contextualized_slots = self.stream_b_transformer(slot_pooled) # [batch_size, num_slots, D]
-        
+        #    (padded slots masked out as keys so they don't contaminate real-slot representations)
+        contextualized_slots = self.stream_b_transformer(
+            slot_pooled, src_key_padding_mask=slot_padding_mask
+        ) # [batch_size, num_slots, D]
+
         # 3. Enrich the original patch-level embeddings residually: [batch_size, num_slots, num_patches, D]
         contextualized_patches = slot_embeddings + contextualized_slots.unsqueeze(2)
-        
+
         # --- Stream A: Question-Visual Context Stream ---
         # 1. Query attends to contextualized slot representations
         # Query: [batch_size, num_query_tokens, D]
@@ -72,7 +77,8 @@ class DualStreamProcessor(nn.Module):
         attn_out, _ = self.stream_a_cross_attn(
             query=query_embeddings,
             key=contextualized_slots,
-            value=contextualized_slots
+            value=contextualized_slots,
+            key_padding_mask=slot_padding_mask
         )
         
         # 2. Residual connection and normalization

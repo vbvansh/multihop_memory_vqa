@@ -35,14 +35,6 @@ class AnswerHead(nn.Module):
             nn.LayerNorm(self.projection_dim)
         )
         
-        # 3. Sequence Generator Head: predicts token logits for [max_answer_len] tokens
-        # Outputs tensor shape: [batch_size, max_answer_len, vocab_size]
-        self.decoder_projection = nn.Sequential(
-            nn.Linear(self.projection_dim, self.projection_dim),
-            nn.ReLU(),
-            nn.Linear(self.projection_dim, self.max_answer_len * self.projection_dim)
-        )
-        
         self.dropout = nn.Dropout(p=0.3)
         
         self.pad_embedding = nn.Parameter(
@@ -104,11 +96,7 @@ class AnswerHead(nn.Module):
             
         # Apply dropout to hidden states before final vocabulary projection
         seq_features = self.dropout(seq_features)
-        
-        print(f"seq_features shape: {seq_features.shape}")
-        print(f"seq_features mean: {seq_features.mean():.4f}")
-        print(f"seq_features std:  {seq_features.std():.4f}")
-        
+
         # Map to vocabulary logits
         logits = self.vocab_projection(seq_features) # [batch_size, max_answer_len, vocab_size]
         

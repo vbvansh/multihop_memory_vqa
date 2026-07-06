@@ -166,12 +166,16 @@ class DocVQADataset(Dataset):
         # Fallback if list is empty
         if not images:
             images.append(Image.new("RGB", (800, 1000), color="white"))
-            
+
+        answers_all = sample["answers"] if sample.get("answers") else [""]
         return {
             "question_id": sample.get("question_id", idx),
             "images": images,
+            "image_paths": img_paths,                       # page image paths (reader loads the routed page)
             "question": sample["question"],
-            "answer": sample["answers"][0] if sample["answers"] else ""
+            "answer": answers_all[0],                        # primary answer (target / teacher forcing)
+            "answers_all": answers_all,                      # full GT list (multi-answer ANLS/EM)
+            "answer_page_idx": int(sample.get("answer_page_idx", 0))  # page-level supervision for the router
         }
 
 def collate_fn(batch):
@@ -180,13 +184,19 @@ def collate_fn(batch):
     """
     # images is a list of lists: each element is a list of PIL Images (pages of a document)
     images = [item["images"] for item in batch]
+    image_paths = [item["image_paths"] for item in batch]
     questions = [item["question"] for item in batch]
     answers = [item["answer"] for item in batch]
+    answers_all = [item["answers_all"] for item in batch]
+    answer_page_idxs = [item["answer_page_idx"] for item in batch]
     question_ids = [item["question_id"] for item in batch]
-    
+
     return {
         "images": images,
+        "image_paths": image_paths,
         "questions": questions,
-        "answers": answers,
+        "answers": answers,              # primary answer per sample (teacher forcing target)
+        "answers_all": answers_all,      # full GT list per sample (metrics)
+        "answer_page_idxs": answer_page_idxs,
         "question_ids": question_ids
     }

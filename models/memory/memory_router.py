@@ -2,6 +2,39 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+
+def aggregate_page_logits(router_logits, slot_padding_mask, slots_per_page=4):
+    """
+    Reduces per-slot 'activate' logits to per-page relevance logits.
+
+    Slots are laid out contiguously per page (page p owns slots
+    [p*slots_per_page : (p+1)*slots_per_page]), matching MemoryBank's
+    [B, num_pages * slots_per_page, ...] ordering.
+
+    Args:
+        router_logits: [B, num_slots, 2] policy logits (index 1 = 'activate')
+        slot_padding_mask: [B, num_slots] bool, True = padded dummy slot
+        slots_per_page: quadrant slots per page (MemoryBank.num_slots_per_page)
+    Returns:
+        page_logits: [B, num_pages] mean activate-logit over each page's real quadrants
+        page_padding_mask: [B, num_pages] bool, True = fully-padded (dummy) page
+    """
+    B, S, _ = router_logits.shape
+    num_pages = S // slots_per_page
+
+    act = router_logits[..., 1].view(B, num_pages, slots_per_page)          # [B, P, q]
+    mask = slot_padding_mask.view(B, num_pages, slots_per_page)             # True = pad
+
+    # torch.where (not multiply) so NaN/inf in padded slots can't contaminate the sum
+    valid = (~mask).to(act.dtype)
+    act_zeroed = torch.where(mask, torch.zeros_like(act), act)
+    denom = valid.sum(dim=-1).clamp(min=1.0)                                # [B, P]
+    page_logits = act_zeroed.sum(dim=-1) / denom                           # [B, P]
+
+    page_padding_mask = mask.all(dim=-1)                                    # [B, P]
+    return page_logits, page_padding_mask
+
+
 class MemoryRouter(nn.Module):
     """
     Policy Network (Router) that computes 2D activation logits

@@ -19,3 +19,13 @@ dual_stream:
   num_layers: 1                 # Number of transformer layers in Stream B
   dropout: 0.1
 
+reader:                                          # Stage-B PaliGemma reader (retrieve-then-read)
+  model_name: "google/paligemma-3b-mix-448"      # VQA-tuned mix model (strong zero-shot ANLS)
+  prompt_template: "answer en {question}"        # PaliGemma task-prefixed VQA prompt
+  max_new_tokens: 20
+  use_lora: true
+  load_4bit: true                                # QLoRA on a 24GB GPU
+  lora_r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+

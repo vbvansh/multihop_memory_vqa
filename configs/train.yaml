@@ -6,6 +6,7 @@ training:
   grad_clip: 1.0
   seed: 42
   num_hops: 3                  # Number of reasoning attention hops
+  lambda_page: 1.0             # Weight for supervised page-selection loss (answer_page_idx)
   lambda_sparsity: 0.3         # Weight for active memory ratio loss
   lambda_entropy: 0.01         # Weight for policy router confidence loss
   target_sparsity: 0.25        # Target 25% active chunks (1 page out of 4)
@@ -13,6 +14,16 @@ training:
   max_train_samples: 1000       # Limit training to the first 1000 samples for debug
   run_val: true                # Enable validation during debugging
   run_test: false               # Disable final test evaluation during debugging
+
+reader_training:               # Stage-B PaliGemma reader (run via: python train_reader.py)
+  batch_size: 2                # physical batch of single-page images (24GB-safe)
+  grad_accum: 8                # effective batch = batch_size * grad_accum
+  epochs: 3
+  lr: 2e-4                     # LoRA learning rate
+  weight_decay: 0.0
+  grad_clip: 1.0
+  warmup_steps: 20
+  router_checkpoint: ""        # set to a router checkpoint_best.pt for end-to-end eval; empty = oracle-only
 
 debug:
   enable: false                # Set true to run local quick validation / overfit test
