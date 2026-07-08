@@ -61,8 +61,12 @@ class PaliGemmaReader(nn.Module):
         if self.use_lora:
             from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
             if self.load_4bit and cuda_ok:
+                # use_reentrant=False + input-grad hook so gradients actually flow
+                # through gradient checkpointing (otherwise LoRA weights never update)
                 self.model = prepare_model_for_kbit_training(
-                    self.model, use_gradient_checkpointing=True
+                    self.model,
+                    use_gradient_checkpointing=True,
+                    gradient_checkpointing_kwargs={"use_reentrant": False},
                 )
             lora_cfg = LoraConfig(
                 r=int(reader_cfg.get("lora_r", 16)),
@@ -76,6 +80,8 @@ class PaliGemmaReader(nn.Module):
                 bias="none",
             )
             self.model = get_peft_model(self.model, lora_cfg)
+            if hasattr(self.model, "enable_input_require_grads"):
+                self.model.enable_input_require_grads()
             self.model.print_trainable_parameters()
 
     @property

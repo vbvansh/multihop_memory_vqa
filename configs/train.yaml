@@ -16,8 +16,8 @@ training:
   run_test: false               # Disable final test evaluation during debugging
 
 reader_training:               # Stage-B PaliGemma reader (run via: python train_reader.py)
-  batch_size: 2                # physical batch of single-page images (24GB-safe)
-  grad_accum: 8                # effective batch = batch_size * grad_accum
+  batch_size: 1                # physical batch of single-page images (memory-safe on a shared GPU)
+  grad_accum: 16               # effective batch = batch_size * grad_accum (unchanged at 16)
   epochs: 3
   lr: 2e-4                     # LoRA learning rate
   weight_decay: 0.0
