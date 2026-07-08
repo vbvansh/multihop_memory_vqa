@@ -14,12 +14,17 @@ def main():
     parser.add_argument("--train_config", type=str, default="./configs/train.yaml", help="Path to training config file")
     parser.add_argument("--router_checkpoint", type=str, default=None,
                         help="Optional router checkpoint for end-to-end eval (overrides reader_training.router_checkpoint)")
+    parser.add_argument("--skip_zeroshot", action="store_true",
+                        help="Skip the pre-training zero-shot reader eval (saves ~28 min on retries)")
     args = parser.parse_args()
 
     trainer = ReaderTrainer(
         model_config_path=args.model_config,
         train_config_path=args.train_config,
     )
+    if args.skip_zeroshot:
+        trainer.rcfg["skip_zeroshot"] = True
+
     if args.router_checkpoint:
         # CLI override for the end-to-end router checkpoint
         trainer.rcfg["router_checkpoint"] = args.router_checkpoint

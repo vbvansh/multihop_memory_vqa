@@ -194,9 +194,12 @@ class ReaderTrainer:
         )
 
         # Zero-shot baseline (mix model is VQA-tuned) before any training
-        self.logger.info("=== Zero-shot reader baseline (before LoRA training) ===")
-        self.evaluate_oracle(eval_loader, name=f"{eval_name}-Oracle-ZeroShot")
-        self.evaluate_end_to_end(eval_loader, name=f"{eval_name}-End2End-ZeroShot")
+        if self.rcfg.get("skip_zeroshot", False):
+            self.logger.info("Skipping zero-shot baseline eval (skip_zeroshot=True).")
+        else:
+            self.logger.info("=== Zero-shot reader baseline (before LoRA training) ===")
+            self.evaluate_oracle(eval_loader, name=f"{eval_name}-Oracle-ZeroShot")
+            self.evaluate_end_to_end(eval_loader, name=f"{eval_name}-End2End-ZeroShot")
 
         best_anls = -1.0
         for epoch in range(epochs):

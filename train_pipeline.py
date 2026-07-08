@@ -27,6 +27,8 @@ def main():
                         help="Skip Stage A and reuse an existing router checkpoint_best.pt")
     parser.add_argument("--router_checkpoint", type=str, default=None,
                         help="Router checkpoint to use for Stage B end-to-end eval (defaults to checkpoints/checkpoint_best.pt)")
+    parser.add_argument("--skip_zeroshot", action="store_true",
+                        help="Skip the pre-training zero-shot reader eval (saves ~28 min on retries)")
     args = parser.parse_args()
 
     # ---------------- Stage A: retriever / page selection ----------------
@@ -61,6 +63,9 @@ def main():
     # Reuse the in-memory router (no reload) for end-to-end ANLS/EM
     if router_trainer is not None:
         reader_trainer.router_trainer = router_trainer
+
+    if args.skip_zeroshot:
+        reader_trainer.rcfg["skip_zeroshot"] = True
 
     reader_trainer.run()
 
