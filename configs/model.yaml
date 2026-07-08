@@ -25,6 +25,7 @@ reader:                                          # Stage-B PaliGemma reader (ret
   max_new_tokens: 20
   use_lora: true
   load_4bit: true                                # QLoRA on a 24GB GPU
+  attn_implementation: "eager"                   # avoids SDPA dtype crash under 4-bit; "sdpa" is faster if it works
   lora_r: 16
   lora_alpha: 32
   lora_dropout: 0.05

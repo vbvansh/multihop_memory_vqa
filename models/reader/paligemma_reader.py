@@ -35,7 +35,15 @@ class PaliGemmaReader(nn.Module):
         from transformers import PaliGemmaForConditionalGeneration, PaliGemmaProcessor
         self.processor = PaliGemmaProcessor.from_pretrained(self.model_name)
 
-        model_kwargs = dict(torch_dtype=self.torch_dtype, low_cpu_mem_usage=True)
+        # "eager" avoids the SDPA strict attn_mask/query dtype check that crashes
+        # PaliGemma under 4-bit QLoRA (BFloat16 mask vs float32 query). "sdpa" is faster
+        # but only safe once transformers fixes that mask dtype; keep eager by default.
+        attn_impl = reader_cfg.get("attn_implementation", "eager")
+        model_kwargs = dict(
+            torch_dtype=self.torch_dtype,
+            low_cpu_mem_usage=True,
+            attn_implementation=attn_impl,
+        )
         if self.load_4bit and cuda_ok:
             from transformers import BitsAndBytesConfig
             model_kwargs["quantization_config"] = BitsAndBytesConfig(
