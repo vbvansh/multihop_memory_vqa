@@ -23,11 +23,21 @@ import argparse
 
 # --- must be set BEFORE huggingface_hub does any downloading ---
 os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "30")
-try:
-    import hf_transfer  # noqa: F401
-    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
-    _HF_TRANSFER = True
-except Exception:
+
+# IMPORTANT: hf_transfer (the fast Rust downloader) IGNORES HF_HUB_DOWNLOAD_TIMEOUT,
+# so on a flaky network a stalled connection hangs forever and the resume-retry loop
+# below never fires. We therefore keep it OFF by default (reliable: stalls abort in 30s
+# and resume). Pass --fast to opt back in when the network is healthy.
+_WANT_FAST = "--fast" in sys.argv
+if _WANT_FAST:
+    try:
+        import hf_transfer  # noqa: F401
+        os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+        _HF_TRANSFER = True
+    except Exception:
+        os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
+        _HF_TRANSFER = False
+else:
     os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
     _HF_TRANSFER = False
 
@@ -48,8 +58,10 @@ def load_model_name(default):
 def main():
     parser = argparse.ArgumentParser(description="One-time robust downloader for the reader model.")
     parser.add_argument("--model", default=None, help="HF model id (default: reader.model_name from config)")
-    parser.add_argument("--retries", type=int, default=200, help="Max retry attempts on network errors")
+    parser.add_argument("--retries", type=int, default=1000, help="Max retry attempts on network errors")
     parser.add_argument("--mirror", action="store_true", help="Use https://hf-mirror.com endpoint")
+    parser.add_argument("--fast", action="store_true",
+                        help="Enable hf_transfer (fast but ignores the stall-timeout; only on a good network)")
     args = parser.parse_args()
 
     if args.mirror:
