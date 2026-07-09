@@ -76,7 +76,9 @@ class RerankerTrainer:
 
             P = page_embs.shape[0]
             ms = maxsim_scores(query_emb, page_embs)                         # [P]
-            ms = (ms - ms.mean()) / (ms.std() + 1e-6)                        # z-score per sample
+            # unbiased=False so single-page docs (P=1) give std=0 -> 0, not NaN
+            ms = (ms - ms.mean()) / (ms.std(unbiased=False) + 1e-6)          # z-score per sample
+            ms = torch.nan_to_num(ms, nan=0.0, posinf=0.0, neginf=0.0)       # defensive
             page_mean = page_embs.mean(dim=1)                               # [P,D]
             q_mean = query_emb.mean(dim=0)                                  # [D]
             gt = max(0, min(int(s["answer_page_idx"]), P - 1))
@@ -129,6 +131,9 @@ class RerankerTrainer:
             self.optimizer.zero_grad()
             logits = self.reranker(page_mean, q_mean, maxsim, mask)
             loss = self.loss_fn(logits, gt)
+            if not torch.isfinite(loss):
+                self.logger.warning("Non-finite loss; skipping batch.")
+                continue
             loss.backward()
             torch.nn.utils.clip_grad_norm_(self.reranker.parameters(), self.grad_clip)
             self.optimizer.step()

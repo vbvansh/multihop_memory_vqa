@@ -43,6 +43,10 @@ class PageReranker(nn.Module):
         self.cross_page = nn.TransformerEncoder(encoder_layer, num_layers=nlayers)
 
         self.score_head = nn.Sequential(nn.LayerNorm(H), nn.Linear(H, 1))
+        # Small init so the learned delta ~= 0 at the start (predictions begin at
+        # MaxSim) while gradients still flow through the cross-page Transformer.
+        nn.init.normal_(self.score_head[-1].weight, std=0.1)
+        nn.init.zeros_(self.score_head[-1].bias)
 
         # Anchor weight on MaxSim. Initialized to 1.0 so that at the start
         # logits ~= maxsim  ->  the model begins at MaxSim's accuracy.
