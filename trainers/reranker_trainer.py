@@ -11,10 +11,24 @@ from datasets.docvqa import DocVQADataset
 from utils.logger import setup_logger
 
 
-def maxsim_scores(query_emb, page_embs):
-    """query_emb [Lq,D], page_embs [P,N,D] -> [P] ColPali late-interaction score."""
-    sims = torch.einsum("qd,pnd->pqn", query_emb, page_embs)   # [P, Lq, N]
-    return sims.max(dim=2).values.sum(dim=1)                    # [P]
+def page_features(query_emb, page_embs):
+    """
+    query_emb [Lq,D], page_embs [P,N,D] ->
+        maxsim    [P]     : ColPali late-interaction score (sum over query tokens of best patch match)
+        page_feat [P,2D]  : [mean-pooled patches ; query-aligned evidence]
+                            The query-aligned vector attention-pools the patches by how well
+                            each matched the question -> "what on this page answered the query"
+                            (much richer than a blind page average).
+    """
+    sims = torch.einsum("qd,pnd->pqn", query_emb, page_embs)    # [P, Lq, N]
+    maxsim = sims.max(dim=2).values.sum(dim=1)                  # [P]
+
+    per_patch = sims.max(dim=1).values                          # [P, N] best query-token match per patch
+    w = torch.softmax(per_patch, dim=1)                         # [P, N] attention over patches
+    q_aligned = torch.einsum("pn,pnd->pd", w, page_embs)        # [P, D] query-focused evidence
+    page_mean = page_embs.mean(dim=1)                           # [P, D] global page content
+    page_feat = torch.cat([page_mean, q_aligned], dim=-1)       # [P, 2D]
+    return maxsim, page_feat
 
 
 class RerankerTrainer:
@@ -75,16 +89,15 @@ class RerankerTrainer:
                 query_emb = query_emb.squeeze(0)                             # [Lq,D]
 
             P = page_embs.shape[0]
-            ms = maxsim_scores(query_emb, page_embs)                         # [P]
+            ms, page_feat = page_features(query_emb, page_embs)             # [P], [P,2D]
             # unbiased=False so single-page docs (P=1) give std=0 -> 0, not NaN
             ms = (ms - ms.mean()) / (ms.std(unbiased=False) + 1e-6)          # z-score per sample
             ms = torch.nan_to_num(ms, nan=0.0, posinf=0.0, neginf=0.0)       # defensive
-            page_mean = page_embs.mean(dim=1)                               # [P,D]
             q_mean = query_emb.mean(dim=0)                                  # [D]
             gt = max(0, min(int(s["answer_page_idx"]), P - 1))
 
             feats.append({
-                "page_mean": page_mean.cpu(),
+                "page_feat": page_feat.cpu(),
                 "q_mean": q_mean.cpu(),
                 "maxsim": ms.cpu(),
                 "gt": gt,
@@ -96,19 +109,20 @@ class RerankerTrainer:
     def _make_batch(self, batch_feats):
         B = len(batch_feats)
         maxP = max(f["P"] for f in batch_feats)
-        page_mean = torch.zeros(B, maxP, self.D)
+        Fp = 2 * self.D
+        page_feat = torch.zeros(B, maxP, Fp)
         maxsim = torch.zeros(B, maxP)
         mask = torch.ones(B, maxP, dtype=torch.bool)
         q_mean = torch.zeros(B, self.D)
         gt = torch.zeros(B, dtype=torch.long)
         for i, f in enumerate(batch_feats):
             P = f["P"]
-            page_mean[i, :P] = f["page_mean"]
+            page_feat[i, :P] = f["page_feat"]
             maxsim[i, :P] = f["maxsim"]
             mask[i, :P] = False
             q_mean[i] = f["q_mean"]
             gt[i] = f["gt"]
-        return (page_mean.to(self.device), q_mean.to(self.device),
+        return (page_feat.to(self.device), q_mean.to(self.device),
                 maxsim.to(self.device), mask.to(self.device), gt.to(self.device))
 
     def _iter_batches(self, feats, batch_size, shuffle):
@@ -127,9 +141,9 @@ class RerankerTrainer:
         loop = tqdm(self._iter_batches(self.train_feats, bs, shuffle=True),
                     total=(len(self.train_feats) + bs - 1) // bs,
                     desc=f"Reranker epoch {epoch+1}")
-        for page_mean, q_mean, maxsim, mask, gt in loop:
+        for page_feat, q_mean, maxsim, mask, gt in loop:
             self.optimizer.zero_grad()
-            logits = self.reranker(page_mean, q_mean, maxsim, mask)
+            logits = self.reranker(page_feat, q_mean, maxsim, mask)
             loss = self.loss_fn(logits, gt)
             if not torch.isfinite(loss):
                 self.logger.warning("Non-finite loss; skipping batch.")
@@ -150,8 +164,8 @@ class RerankerTrainer:
         r_ok = m_ok = tot = 0
         r_ok_mp = m_ok_mp = tot_mp = 0
         r_ok_sp = tot_sp = 0
-        for page_mean, q_mean, maxsim, mask, gt in self._iter_batches(feats, bs, shuffle=False):
-            logits = self.reranker(page_mean, q_mean, maxsim, mask)
+        for page_feat, q_mean, maxsim, mask, gt in self._iter_batches(feats, bs, shuffle=False):
+            logits = self.reranker(page_feat, q_mean, maxsim, mask)
             r_pred = logits.argmax(dim=1)
             m_pred = maxsim.masked_fill(mask, -1e9).argmax(dim=1)   # pure MaxSim baseline
             real_pages = (~mask).sum(dim=1)                        # [B]
@@ -175,18 +189,24 @@ class RerankerTrainer:
         return pct(r_ok, tot), pct(r_ok_mp, tot_mp)
 
     def run(self):
-        epochs = int(self.rc.get("epochs", 50))
+        epochs = int(self.rc.get("epochs", 15))
+        patience = int(self.rc.get("patience", 3))          # early stop if no val improvement
         self.logger.info("=== Baseline (epoch 0): pure MaxSim vs untrained reranker ===")
         self.evaluate(self.val_feats, name="Val@0")
 
-        best = -1.0
+        best, best_mp, best_epoch, since = -1.0, -1.0, 0, 0
         for epoch in range(epochs):
             loss = self.train_epoch(epoch)
             self.logger.info(f"[Reranker] Epoch {epoch+1}/{epochs} | train loss {loss:.4f}")
             acc, acc_mp = self.evaluate(self.val_feats, name="Val")
             if acc > best:
-                best = acc
+                best, best_mp, best_epoch, since = acc, acc_mp, epoch + 1, 0
                 torch.save(self.reranker.state_dict(),
                            os.path.join(self.checkpoints_dir, "reranker_best.pt"))
                 self.logger.info(f"Saved best reranker (val top-1 {acc:.2f}%).")
-        self.logger.info(f"Done. Best val top-1: {best:.2f}%")
+            else:
+                since += 1
+                if since >= patience:
+                    self.logger.info(f"Early stopping at epoch {epoch+1} (no improvement for {patience} epochs).")
+                    break
+        self.logger.info(f"Done. BEST val top-1: {best:.2f}% | multi-page: {best_mp:.2f}% (epoch {best_epoch}) | MaxSim multi-page: 70.79%")

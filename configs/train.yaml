@@ -11,15 +11,16 @@ training:
   lambda_entropy: 0.01         # Weight for policy router confidence loss
   target_sparsity: 0.25        # Target 25% active chunks (1 page out of 4)
   max_val_samples: 1000        # Slice the 5K validation set to the first 1K samples
-  max_train_samples: 1000       # Limit training to the first 1000 samples for debug
+  max_train_samples: 1500       # Use all available MPDocVQA train samples on the server
   run_val: true                # Enable validation during debugging
   run_test: false               # Disable final test evaluation during debugging
 
 reranker_training:             # MaxSim-anchored page reranker (run via: python train_reranker.py)
   batch_size: 16
-  epochs: 50
+  epochs: 15                    # best was ~epoch 2 before; early-stopping guards the rest
+  patience: 3                  # stop if val top-1 doesn't improve for this many epochs
   lr: 1e-4
-  weight_decay: 0.01
+  weight_decay: 0.05           # stronger weight decay to fight overfitting
   grad_clip: 1.0
 
 reader_training:               # Stage-B PaliGemma reader (run via: python train_reader.py)

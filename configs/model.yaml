@@ -22,7 +22,7 @@ dual_stream:
 reranker:                       # MaxSim-anchored multi-hop page reranker (novelty)
   num_heads: 4
   num_layers: 2                 # cross-page reasoning "hops"
-  dropout: 0.1
+  dropout: 0.2                  # higher dropout to fight overfitting on small data
 
 reader:                                          # Stage-B PaliGemma reader (retrieve-then-read)
   model_name: "google/paligemma-3b-mix-448"      # VQA-tuned mix model (strong zero-shot ANLS)

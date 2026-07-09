@@ -14,7 +14,7 @@ class PageReranker(nn.Module):
     accuracy and only has to LEARN THE DELTA (which page MaxSim's top-1 got wrong).
 
     Inputs (per batch):
-        page_mean          : [B, P, D]  mean-pooled patch embedding per page
+        page_feat          : [B, P, 2D] per-page features = [mean-pooled patches ; query-aligned evidence]
         q_mean             : [B, D]      mean-pooled question embedding
         maxsim             : [B, P]      per-page MaxSim score (z-scored per sample)
         page_padding_mask  : [B, P] bool True = padded (dummy) page
@@ -31,8 +31,9 @@ class PageReranker(nn.Module):
         nlayers = rc.get("num_layers", 2)          # number of cross-page reasoning "hops"
         dropout = rc.get("dropout", 0.1)
 
+        self.page_feat_dim = 2 * D                 # [page_mean ; query-aligned evidence]
         self.query_proj = nn.Linear(D, H)
-        self.page_proj = nn.Linear(D, H)
+        self.page_proj = nn.Linear(self.page_feat_dim, H)
         # per-page input = [projected page ; projected query ; maxsim scalar]
         self.input_proj = nn.Linear(2 * H + 1, H)
 
@@ -52,11 +53,11 @@ class PageReranker(nn.Module):
         # logits ~= maxsim  ->  the model begins at MaxSim's accuracy.
         self.maxsim_scale = nn.Parameter(torch.tensor(1.0))
 
-    def forward(self, page_mean, q_mean, maxsim, page_padding_mask):
-        B, P, _ = page_mean.shape
+    def forward(self, page_feat, q_mean, maxsim, page_padding_mask):
+        B, P, _ = page_feat.shape
 
         q = self.query_proj(q_mean).unsqueeze(1).expand(-1, P, -1)   # [B, P, H]
-        pg = self.page_proj(page_mean)                              # [B, P, H]
+        pg = self.page_proj(page_feat)                              # [B, P, H]
         feat = torch.cat([pg, q, maxsim.unsqueeze(-1)], dim=-1)     # [B, P, 2H+1]
         x = self.input_proj(feat)                                  # [B, P, H]
 
