@@ -37,6 +37,11 @@ import torch
 from PIL import Image
 from tqdm import tqdm
 
+# DUDE has a few enormous scans (100+ megapixel). ColPali resizes to 448 anyway,
+# so we cap the decode size: silence the bomb warning and downscale big images.
+Image.MAX_IMAGE_PIXELS = None
+MAX_SIDE = 1600  # longest side; well above 448 so no retrieval detail is lost
+
 from models.encoders.vision_encoder import ColPaliVisionEncoder
 from models.encoders.question_encoder import ColPaliQuestionEncoder
 
@@ -97,7 +102,10 @@ def load_gt(gt_json):
 
 def load_image(path):
     try:
-        return Image.open(path).convert("RGB")
+        img = Image.open(path).convert("RGB")
+        if max(img.size) > MAX_SIDE:
+            img.thumbnail((MAX_SIDE, MAX_SIDE), Image.BILINEAR)
+        return img
     except Exception as e:
         print(f"  [warn] could not open {path}: {e}")
         return Image.new("RGB", (448, 448), color="white")
