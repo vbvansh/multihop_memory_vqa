@@ -20,8 +20,9 @@ import json
 def _extract_gold_pages(apbb):
     """
     answers_page_bounding_boxes is a list (per answer) of lists (boxes) of dicts
-    each with a 1-indexed 'page'. Return the sorted set of 0-indexed pages, or [].
-    Robust to None / empty / missing.
+    each with a 0-indexed 'page' (verified empirically: 2325 page==0 vs 18 page==P
+    on val, and MaxSim top-1 76.4% under 0-indexed vs 57.8% under 1-indexed).
+    Return the sorted set of 0-indexed pages, or []. Robust to None/empty/missing.
     """
     pages = set()
     if not apbb:
@@ -33,7 +34,7 @@ def _extract_gold_pages(apbb):
         boxes = per_answer if isinstance(per_answer, list) else [per_answer]
         for box in boxes:
             if isinstance(box, dict) and "page" in box and box["page"] is not None:
-                p = int(box["page"]) - 1        # 1-indexed -> 0-indexed
+                p = int(box["page"])           # already 0-indexed
                 if p >= 0:
                     pages.add(p)
     return sorted(pages)
