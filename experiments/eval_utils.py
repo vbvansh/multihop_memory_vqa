@@ -34,13 +34,24 @@ def _f1(pred_toks, gold_toks):
     return 2 * prec * rec / (prec + rec)
 
 
+def _to_list(x):
+    """TAT-DQA 'answer' is usually a list but can be a bare number/str."""
+    if x is None:
+        return []
+    if isinstance(x, (list, tuple)):
+        return list(x)
+    return [x]
+
+
 def evaluate(pred, gold_list, scale=""):
     """
     pred: model output string.
-    gold_list: list of gold answer spans (TAT-DQA 'answer').
+    gold_list: gold answer span(s) (TAT-DQA 'answer' — list, or a bare number/str).
     scale: optional unit (e.g. 'percent', 'million').
     Returns (em, f1) in [0,1].
     """
+    gold_list = _to_list(gold_list)
+    scale = str(scale) if scale else ""
     gold_join = " ".join([str(x) for x in gold_list] + ([scale] if scale else []))
     gold_toks = normalize(gold_join)
     pred_toks = normalize(pred)

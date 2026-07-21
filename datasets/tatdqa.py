@@ -31,12 +31,17 @@ class TATDQADataset:
                 continue
             pdf_path, img_path = self._find_files(uid, page)
             for q in doc.get("questions", []):
+                ans = q.get("answer")
+                if ans is None:
+                    ans = []
+                elif not isinstance(ans, (list, tuple)):
+                    ans = [ans]                 # bare number/str -> list (count/arithmetic)
                 self.samples.append({
                     "question_id": q.get("uid"),
                     "doc_uid": uid,
                     "page": page,
                     "question": q.get("question", ""),
-                    "answers": q.get("answer") or [],
+                    "answers": list(ans),
                     "answer_type": q.get("answer_type", ""),
                     "scale": q.get("scale", "") or "",
                     "pdf_path": pdf_path,
