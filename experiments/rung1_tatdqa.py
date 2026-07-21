@@ -25,7 +25,6 @@ from tqdm import tqdm
 
 from datasets.tatdqa import TATDQADataset
 from experiments.eval_utils import evaluate
-from models.reader.paligemma_reader import PaliGemmaReader
 
 Image.MAX_IMAGE_PIXELS = None
 DEFAULT_JSON = "/c/ujjwalb/Vansh/Datasets/TATDQA/tatdqa_dataset_dev.json"
@@ -50,9 +49,11 @@ def main():
     ap.add_argument("--cache_dir", default=os.path.join(HERE, "mineru_cache"))
     ap.add_argument("--model_config", default="./configs/model.yaml")
     ap.add_argument("--max_samples", type=int, default=150)
-    ap.add_argument("--reader_batch", type=int, default=4)
-    ap.add_argument("--max_table_chars", type=int, default=1800)
-    ap.add_argument("--max_new_tokens", type=int, default=32)
+    ap.add_argument("--reader", choices=["paligemma", "qwen"], default="qwen")
+    ap.add_argument("--qwen_model", default="Qwen/Qwen2.5-VL-7B-Instruct")
+    ap.add_argument("--reader_batch", type=int, default=2)
+    ap.add_argument("--max_table_chars", type=int, default=4000)
+    ap.add_argument("--max_new_tokens", type=int, default=48)
     args = ap.parse_args()
 
     with open(args.model_config) as f:
@@ -60,6 +61,8 @@ def main():
     config.setdefault("reader", {})
     config["reader"]["use_lora"] = False               # zero-shot base reader
     config["reader"]["max_new_tokens"] = args.max_new_tokens
+    if args.reader == "qwen":
+        config["reader"]["model_name"] = args.qwen_model
 
     def cache_path(uid):
         return os.path.join(args.cache_dir, uid + ".json")
@@ -74,7 +77,12 @@ def main():
         print("No usable samples — run experiments/mineru_parse.py (mineru env) first.")
         return
 
-    reader = PaliGemmaReader(config)
+    if args.reader == "qwen":
+        from models.reader.qwen_reader import QwenVLReader
+        reader = QwenVLReader(config)
+    else:
+        from models.reader.paligemma_reader import PaliGemmaReader
+        reader = PaliGemmaReader(config)
 
     table_text_by_uid = {}
 
@@ -113,7 +121,8 @@ def main():
     bEM, bF1 = score(base_preds)
     oEM, oF1 = score(ours_preds)
     print("=" * 72)
-    print(f"RUNG 1  TAT-DQA dev  N={len(usable)}  reader=PaliGemma-3B (zero-shot)")
+    rname = args.qwen_model if args.reader == "qwen" else "PaliGemma-3B"
+    print(f"RUNG 1  TAT-DQA dev  N={len(usable)}  reader={rname} (zero-shot)")
     print(f"  Baseline (page only)        : EM {bEM:5.2f} | F1 {bF1:5.2f}")
     print(f"  Ours     (page + table text): EM {oEM:5.2f} | F1 {oF1:5.2f}")
     print(f"  delta                       : EM {oEM-bEM:+5.2f} | F1 {oF1-bF1:+5.2f}")
