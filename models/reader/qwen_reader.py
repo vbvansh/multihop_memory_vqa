@@ -12,6 +12,8 @@ import torch
 import torch.nn as nn
 
 SYSTEM = "You are a document understanding assistant. Answer concisely with only the final answer(s), no explanation."
+TEXT_SYSTEM = ("You are a table and financial QA assistant. Use the given text and table to answer. "
+               "Respond with ONLY the final answer (a number or a short phrase), no explanation.")
 
 
 class QwenVLReader(nn.Module):
@@ -74,8 +76,27 @@ class QwenVLReader(nn.Module):
 
     @torch.no_grad()
     def generate(self, images, questions):
-        """Greedy-decode answer strings for a batch. Returns list[str]."""
+        """Greedy-decode answer strings for a batch (image + text). Returns list[str]."""
         inputs = self._build_inputs(images, questions)
+        gen = self.model.generate(**inputs, max_new_tokens=self.max_new_tokens, do_sample=False)
+        in_len = inputs["input_ids"].shape[1]
+        trimmed = gen[:, in_len:]
+        texts = self.processor.batch_decode(
+            trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)
+        return [t.strip() for t in texts]
+
+    @torch.no_grad()
+    def generate_text(self, prompts, system=TEXT_SYSTEM):
+        """Text-only generation (no image), for structured-table QA like MultiHiertt."""
+        texts = []
+        for q in prompts:
+            messages = [
+                {"role": "system", "content": system},
+                {"role": "user", "content": [{"type": "text", "text": q}]},
+            ]
+            texts.append(self.processor.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True))
+        inputs = self.processor(text=texts, return_tensors="pt", padding=True).to(self.device)
         gen = self.model.generate(**inputs, max_new_tokens=self.max_new_tokens, do_sample=False)
         in_len = inputs["input_ids"].shape[1]
         trimmed = gen[:, in_len:]

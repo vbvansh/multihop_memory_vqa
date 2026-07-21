@@ -43,6 +43,32 @@ def _to_list(x):
     return [x]
 
 
+def _last_number(s):
+    """Extract the last numeric value from a string (handles commas, %, $)."""
+    s = str(s).replace(",", "").replace("$", "")
+    m = re.findall(r"-?\d+\.?\d*", s)
+    return float(m[-1]) if m else None
+
+
+def evaluate_multihiertt(pred, gold, question_type=""):
+    """
+    MultiHiertt: arithmetic answers are numeric (match with tolerance); span answers
+    are text (token EM/F1). Returns (em, f1).
+    """
+    is_num = isinstance(gold, (int, float)) or question_type == "arithmetic"
+    if is_num:
+        try:
+            g = float(gold)
+        except (TypeError, ValueError):
+            g = _last_number(gold)
+        p = _last_number(pred)
+        if g is None or p is None:
+            return 0.0, 0.0
+        ok = 1.0 if (round(p, 2) == round(g, 2) or abs(p - g) <= max(0.01, 0.005 * abs(g))) else 0.0
+        return ok, ok
+    return evaluate(pred, [gold])
+
+
 def evaluate(pred, gold_list, scale=""):
     """
     pred: model output string.
