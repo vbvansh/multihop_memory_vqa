@@ -24,6 +24,7 @@ from tqdm import tqdm
 
 from datasets.multihiertt import MultiHierttDataset, relevant_table_indices, flatten_html
 from experiments.eval_utils import evaluate_multihiertt
+from experiments.pot import POT_SYSTEM, parse_pot
 
 DEFAULT_JSON = "/c/ujjwalb/Vansh/Datasets/MultiHiertt/dev.json"
 
@@ -64,6 +65,8 @@ def main():
     ap.add_argument("--reader_batch", type=int, default=2)
     ap.add_argument("--max_chars", type=int, default=7000)
     ap.add_argument("--max_new_tokens", type=int, default=64)
+    ap.add_argument("--pot", action="store_true",
+                    help="Program-of-Thought: model emits an arithmetic expression, we execute it")
     args = ap.parse_args()
 
     with open(args.model_config) as f:
@@ -71,7 +74,8 @@ def main():
     config.setdefault("reader", {})
     config["reader"]["use_lora"] = False
     config["reader"]["model_name"] = args.qwen_model
-    config["reader"]["max_new_tokens"] = args.max_new_tokens
+    # PoT needs room to reason before the final ANSWER = line
+    config["reader"]["max_new_tokens"] = max(args.max_new_tokens, 256) if args.pot else args.max_new_tokens
 
     ds = MultiHierttDataset(args.json)
     usable = ds.samples[:args.max_samples] if args.max_samples else ds.samples
@@ -86,7 +90,12 @@ def main():
     def run(prompts, tag):
         preds = []
         for i in tqdm(range(0, len(prompts), args.reader_batch), desc=tag):
-            preds.extend(reader.generate_text(prompts[i:i + args.reader_batch]))
+            batch = prompts[i:i + args.reader_batch]
+            if args.pot:
+                out = reader.generate_text(batch, system=POT_SYSTEM)
+                preds.extend(parse_pot(o) for o in out)
+            else:
+                preds.extend(reader.generate_text(batch))
         return preds
 
     base_preds = run(base_p, "baseline (flat table)")
@@ -106,7 +115,8 @@ def main():
         return 100.0 * em / n, 100.0 * f1 / n, n
 
     print("=" * 74)
-    print(f"MultiHiertt dev  N={len(usable)}  reader={args.qwen_model} (text-only, oracle evidence)")
+    mode = "PoT (execute expression)" if args.pot else "direct answer"
+    print(f"MultiHiertt dev  N={len(usable)}  reader={args.qwen_model} (text-only, oracle evidence, {mode})")
     for subset, label in [(None, "ALL"), ("span_selection", "span"), ("arithmetic", "arithmetic")]:
         bE, bF, n = score(base_preds, subset)
         oE, oF, _ = score(ours_preds, subset)
