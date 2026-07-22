@@ -54,6 +54,8 @@ def main():
     ap.add_argument("--reader", choices=["qwen", "paligemma"], default="qwen")
     ap.add_argument("--qwen_model", default="Qwen/Qwen2.5-VL-7B-Instruct")
     ap.add_argument("--max_samples", type=int, default=150)
+    ap.add_argument("--require_table", action="store_true",
+                    help="keep only questions whose gold page MinerU-parsed a table (image-table subset)")
     ap.add_argument("--reader_batch", type=int, default=2)
     ap.add_argument("--max_text_chars", type=int, default=6000)
     ap.add_argument("--max_new_tokens", type=int, default=48)
@@ -70,10 +72,21 @@ def main():
     def cache_path(did, pg):
         return os.path.join(args.cache_dir, f"{did}_{pg}.json")
 
+    def page_has_table(did, pg):
+        try:
+            d = json.load(open(cache_path(did, pg), "r", encoding="utf-8"))
+            return bool(d.get("tables"))
+        except Exception:
+            return False
+
     ds = DUDEDataset(args.gt_json, args.images_root, split=args.split)
     localizable = [s for s in ds.samples if s["gold_pages"]]
     # keep only questions whose gold page has a MinerU cache
     usable = [s for s in localizable if os.path.exists(cache_path(s["doc_id"], min(s["gold_pages"])))]
+    n_cached = len(usable)
+    if args.require_table:
+        usable = [s for s in usable if page_has_table(s["doc_id"], min(s["gold_pages"]))]
+        print(f"table-page subset: {len(usable)} of {n_cached} cached questions are on pages with a table.")
     if args.max_samples:
         usable = usable[:args.max_samples]
     print(f"{len(usable)} usable samples (of {len(localizable)} localizable; need MinerU cache).")
