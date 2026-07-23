@@ -40,6 +40,27 @@ def _extract_gold_pages(apbb):
     return sorted(pages)
 
 
+def _extract_boxes(apbb):
+    """Return the raw answer boxes: list of {page(0-idx), left, top, width, height}."""
+    boxes = []
+    if not apbb:
+        return boxes
+    for per_answer in apbb:
+        if not per_answer:
+            continue
+        bs = per_answer if isinstance(per_answer, list) else [per_answer]
+        for b in bs:
+            if isinstance(b, dict) and b.get("page") is not None:
+                boxes.append({
+                    "page": int(b["page"]),
+                    "left": float(b.get("left", 0)),
+                    "top": float(b.get("top", 0)),
+                    "width": float(b.get("width", 0)),
+                    "height": float(b.get("height", 0)),
+                })
+    return boxes
+
+
 class DUDEDataset:
     """
     Lightweight loader (not a torch Dataset subclass; the diagnostic reads embeddings
@@ -58,7 +79,7 @@ class DUDEDataset:
         for x in data:
             if split and x.get("data_split") != split:
                 continue
-            gold = _extract_gold_pages(x.get("answers_page_bounding_boxes"))
+            apbb = x.get("answers_page_bounding_boxes")
             self.samples.append({
                 "question_id": x["questionId"],
                 "doc_id": x["docId"],
@@ -66,7 +87,8 @@ class DUDEDataset:
                 "question": x["question"],
                 "answers": x.get("answers") or [""],
                 "answer_type": x.get("answer_type", ""),
-                "gold_pages": gold,
+                "gold_pages": _extract_gold_pages(apbb),
+                "gold_boxes": _extract_boxes(apbb),
             })
 
     def image_path(self, doc_id, split, page):

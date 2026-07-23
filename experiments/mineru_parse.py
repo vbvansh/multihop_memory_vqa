@@ -31,10 +31,10 @@ def find_content_list(out_dir, uid):
 
 
 def extract(content_list_path):
-    """Pull table HTML + a compact region list from MinerU's content_list.json."""
+    """Pull table HTML + region list + table crop-image names from MinerU's content_list.json."""
     obj = json.load(open(content_list_path, "r", encoding="utf-8"))
     items = obj if isinstance(obj, list) else []
-    tables, regions = [], []
+    tables, regions, img_names = [], [], []
     for b in items:
         if not isinstance(b, dict):
             continue
@@ -44,7 +44,10 @@ def extract(content_list_path):
             body = b.get("table_body") or b.get("html") or ""
             if body:
                 tables.append(body)
-    return "\n\n".join(tables), tables, regions
+            ip = b.get("img_path")
+            if ip:
+                img_names.append(os.path.basename(ip))
+    return "\n\n".join(tables), tables, regions, img_names
 
 
 def main():
@@ -53,12 +56,14 @@ def main():
     ap.add_argument("--docs_dir", default=DEFAULT_DOCS)
     ap.add_argument("--cache_dir", default=os.path.join(HERE, "mineru_cache"))
     ap.add_argument("--raw_dir", default=os.path.join(HERE, "mineru_raw"))
+    ap.add_argument("--crops_dir", default=os.path.join(HERE, "tatdqa_crops"))
     ap.add_argument("--max_docs", type=int, default=0, help="0 = all docs in the json")
     ap.add_argument("--keep_raw", action="store_true", help="keep MinerU's full output (default: delete to save disk)")
     args = ap.parse_args()
 
     os.makedirs(args.cache_dir, exist_ok=True)
     os.makedirs(args.raw_dir, exist_ok=True)
+    os.makedirs(args.crops_dir, exist_ok=True)
 
     data = json.load(open(args.json, "r", encoding="utf-8"))
     uids, seen = [], set()
@@ -75,8 +80,13 @@ def main():
     for i, uid in enumerate(uids):
         cache_path = os.path.join(args.cache_dir, uid + ".json")
         if os.path.exists(cache_path):
-            skip += 1
-            continue
+            try:
+                if "crop" in json.load(open(cache_path, encoding="utf-8")):
+                    skip += 1          # already processed by the crop-aware version
+                    continue
+            except Exception:
+                pass
+            # older cache without a crop -> re-parse to add it
 
         pdf = os.path.join(args.docs_dir, uid + ".pdf")
         if not os.path.exists(pdf):
@@ -101,8 +111,17 @@ def main():
             fail += 1
             continue
 
-        table_text, tables, regions = extract(cl)
-        json.dump({"uid": uid, "table_text": table_text, "tables": tables, "regions": regions},
+        table_text, tables, regions, img_names = extract(cl)
+        # copy the first table crop image (for the crop-vs-structure diagnostic)
+        crop_saved = None
+        for name in img_names:
+            hits = glob.glob(os.path.join(args.raw_dir, uid, "**", name), recursive=True)
+            if hits:
+                crop_saved = uid + ".png"
+                shutil.copy(hits[0], os.path.join(args.crops_dir, crop_saved))
+                break
+        json.dump({"uid": uid, "table_text": table_text, "tables": tables,
+                   "regions": regions, "crop": crop_saved},
                   open(cache_path, "w", encoding="utf-8"))
         done += 1
 
